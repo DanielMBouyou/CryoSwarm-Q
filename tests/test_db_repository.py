@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pymongo import MongoClient
 
 from packages.core.enums import CandidateStatus, GoalStatus, SequenceFamily
+from packages.core.config import get_settings
 from packages.core.models import (
     EvaluationResult,
     ExperimentGoal,
@@ -17,15 +18,22 @@ from packages.db.repositories import CryoSwarmRepository
 
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("MONGODB_URI"),
+    not get_settings().has_mongodb,
     reason="MONGODB_URI is not configured.",
 )
 
 
 def _get_repository_or_skip() -> CryoSwarmRepository:
+    settings = get_settings()
     try:
-        repository = CryoSwarmRepository()
-        repository.database.command("ping")
+        client = MongoClient(
+            settings.mongodb_uri,
+            serverSelectionTimeoutMS=3000,
+            connectTimeoutMS=3000,
+            socketTimeoutMS=3000,
+        )
+        client.admin.command("ping")
+        repository = CryoSwarmRepository(settings)
         return repository
     except Exception as exc:
         pytest.skip(f"MongoDB is not reachable in this environment: {exc}")
