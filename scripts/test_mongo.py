@@ -1,59 +1,42 @@
 from __future__ import annotations
 
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-from pymongo.mongo_client import MongoClient
-from pymongo.server_api import ServerApi
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-ENV_PATH = REPO_ROOT / ".env"
-
-
-def require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
+from packages.core.config import get_settings
+from packages.db.init_db import initialize_database
+from packages.db.mongodb import close_mongo_client, get_database, get_mongo_client
 
 
 def main() -> int:
-    load_dotenv(ENV_PATH)
+    settings = get_settings()
+    if not settings.has_mongodb:
+        raise RuntimeError("MONGODB_URI is not configured.")
 
-    uri = require_env("MONGODB_URI")
-    database_name = os.getenv("MONGODB_DATABASE", "cryoswarm_q")
-    collection_name = os.getenv("MONGODB_COLLECTION", "connection_tests")
-
-    client = MongoClient(uri, server_api=ServerApi("1"))
+    initialize_database()
+    client = get_mongo_client(settings)
 
     try:
         client.admin.command("ping")
-
-        collection = client[database_name][collection_name]
-        document = {
-            "project": "CryoSwarm-Q",
-            "event": "mongodb_connection_test",
-            "status": "connected",
-            "created_at": datetime.now(UTC),
-            "source": "scripts/test_mongo.py",
-        }
-        result = collection.insert_one(document)
-
-        print("Pinged MongoDB Atlas successfully.")
-        print(
-            f"Inserted one document into {database_name}.{collection_name} "
-            f"with _id={result.inserted_id}"
+        collection = get_database(settings)[settings.default_collection]
+        result = collection.insert_one(
+            {
+                "project": "CryoSwarm-Q",
+                "event": "mongodb_connection_test",
+                "status": "connected",
+                "created_at": datetime.now(UTC),
+            }
         )
+        print("MongoDB Atlas connection succeeded.")
+        print(f"Inserted test document with _id={result.inserted_id}")
         return 0
-    except Exception as exc:
-        print(f"MongoDB connection test failed: {exc}", file=sys.stderr)
-        return 1
     finally:
-        client.close()
+        close_mongo_client()
 
 
 if __name__ == "__main__":

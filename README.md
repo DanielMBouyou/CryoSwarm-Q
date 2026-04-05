@@ -1,255 +1,161 @@
 # CryoSwarm-Q
 
-CryoSwarm-Q is a hardware-aware multi-agent research runtime for neutral-atom experimentation. The project is designed to transform a structured scientific objective into a ranked experimental campaign across Pulser and Pasqal-oriented workflows.
+CryoSwarm-Q is a hardware-aware multi-agent research software prototype for neutral-atom experimentation. It accepts a structured experiment goal, proposes register and pulse-sequence candidates, evaluates them under synthetic noise and feasibility constraints, recommends an evaluation backend, ranks the campaign, stores traceable decisions in MongoDB Atlas, and exposes the workflow through FastAPI and Streamlit.
 
-## Overview
+## Architecture Overview
 
-The repository targets a specific problem in neutral-atom quantum computing: the gap between a research idea and a robust, runnable experiment campaign. Writing a single pulse sequence is not the bottleneck. The bottleneck is exploring the space of feasible register geometries, pulse parameterizations, noise assumptions, emulator choices, and evaluation budgets in a structured and traceable way.
+The prototype is organized as a modular research stack:
 
-CryoSwarm-Q is intended to sit between:
+- `packages/core`: typed models, enums, configuration, and logging
+- `packages/db`: MongoDB connection, initialization, and repositories
+- `packages/agents`: explicit agents for framing, geometry, sequence generation, robustness, routing, campaign ranking, results, and memory
+- `packages/scoring`: objective, robustness, and ranking logic
+- `packages/simulation`: deterministic synthetic evaluators and noise profiles
+- `packages/pasqal_adapters`: Pulser integration plus optional adapters for QoolQit and Pasqal Cloud
+- `packages/orchestration`: end-to-end pipeline and demo runner
+- `apps/api`: FastAPI backend
+- `apps/dashboard`: Streamlit dashboard
+- `scripts`: connection checks and demo entrypoints
+- `tests`: initial validation suite
 
-- human scientific intent,
-- pulse-level neutral-atom programming,
-- local and cloud simulation backends,
-- and future execution workflows on Pasqal-oriented infrastructure.
+## Agent Stack
 
-This is not a generic assistant or a generic orchestration demo. It is a research software layer for autonomous experiment design under hardware-aware constraints.
+CryoSwarm-Q currently includes these explicit agents:
 
-## Problem Statement
+- `ProblemFramingAgent`: converts a research goal into a structured experiment specification
+- `GeometryAgent`: proposes plausible neutral-atom register layouts
+- `SequenceAgent`: generates pulse-level control candidates compatible with Pulser-oriented workflows
+- `NoiseRobustnessAgent`: evaluates nominal and perturbed candidate quality
+- `BackendRoutingAgent`: recommends `local_pulser_simulation`, `emu_sv_candidate`, or `emu_mps_candidate`
+- `CampaignAgent`: ranks the full portfolio and updates campaign state
+- `ResultsAgent`: builds the readable campaign summary
+- `MemoryAgent`: stores reusable lessons from prior runs
 
-A researcher exploring neutral-atom experiments typically has to:
+## Data and Persistence
 
-- choose a register geometry,
-- respect device and channel constraints,
-- define one or more pulse strategies,
-- evaluate candidates under noise,
-- decide whether to use local simulation, exact emulation, or scalable approximation,
-- compare outcomes across multiple variants,
-- and iterate until a robust candidate set emerges.
+MongoDB Atlas is used for campaign persistence and agent traceability. The prototype stores:
 
-CryoSwarm-Q addresses that workflow as an autonomous campaign problem rather than a one-off scripting task.
+- experiment goals
+- register candidates
+- sequence candidates
+- robustness reports
+- campaigns
+- agent decisions
+- memory records
+- evaluation results
 
-## Core Objective
+All identifiers are generated in the application layer to keep serialization explicit and easy to inspect.
 
-The system must:
+## Environment Setup
 
-- accept a structured experimental objective,
-- generate candidate neutral-atom registers and pulse sequences,
-- evaluate them under device and noise constraints,
-- route each candidate to the most relevant backend or emulator path,
-- rank the resulting candidates by robustness and feasibility,
-- and retain an experiment memory of prior evaluations.
-
-## Design Principles
-
-The repository is organized around four principles:
-
-1. Hardware-aware modeling
-   Geometry, device limits, pulse representation, backend selection, and noise assumptions must be explicit.
-
-2. Multi-agent orchestration
-   The system should rely on specialized agents with narrow responsibilities rather than a single opaque controller.
-
-3. Simulation-first workflow
-   Candidate generation, robustness analysis, emulator routing, and campaign ranking come before any future execution integration.
-
-4. Research credibility
-   The architecture must be explainable, reproducible, and technically grounded enough for review by quantum software practitioners.
-
-## Agent Architecture
-
-The initial architecture is expected to include the following roles:
-
-- `ProblemFramingAgent`
-  Converts a vague scientific request into a structured search objective with priorities and constraints.
-
-- `GeometryAgent`
-  Proposes neutral-atom register layouts that remain compatible with hardware-aware device assumptions.
-
-- `SequenceAgent`
-  Generates pulse sequence candidates for a given register, including controllable amplitude, detuning, and phase trajectories.
-
-- `NoiseRobustnessAgent`
-  Evaluates sensitivity to perturbations and estimates which candidates remain useful under realistic noise assumptions.
-
-- `BackendRoutingAgent`
-  Chooses the most relevant evaluation path, such as local Pulser simulation, exact emulation, or scalable approximation.
-
-- `CampaignAgent`
-  Manages portfolio-level decisions across the whole search campaign: exploration, pruning, prioritization, and compute budget allocation.
-
-- `ResultsAgent`
-  Aggregates outputs into a readable ranking, failure analysis, and recommendation set.
-
-- `MemoryAgent`
-  Retains prior outcomes, promising candidate families, fragile geometries, and backend selection patterns.
-
-## Experimental Workflow
-
-The target end-to-end flow is:
-
-1. Receive an experiment goal.
-2. Frame the goal as a structured search problem.
-3. Generate candidate geometries.
-4. Generate candidate pulse sequences.
-5. Evaluate candidates under hardware constraints and noise assumptions.
-6. Route each candidate to an appropriate simulator or emulator.
-7. Rank the campaign by utility, robustness, and feasibility.
-8. Persist the reasoning and outcomes in experiment memory.
-
-## Decision Logic
-
-The ranking model is intentionally simple to explain:
-
-```text
-candidate score = scientific quality + robustness - compute cost - delay penalty
-```
-
-In practical terms, CryoSwarm-Q should prefer candidates that:
-
-- produce a strong experimental signal,
-- remain stable under noise and device imperfections,
-- do not consume unnecessary simulation or execution resources,
-- and can be evaluated in a reasonable campaign timeline.
-
-This matters because the project is not looking for the most optimistic theoretical result. It is looking for the most usable experiment candidate under realistic conditions.
-
-### Robustness, in plain language
-
-Robustness means a candidate should still perform reasonably well when the environment is no longer ideal. Instead of trusting a single perfect run, the system evaluates the same candidate across multiple perturbation scenarios such as noise, parameter drift, or control variation.
-
-The practical question is:
-
-```text
-If we perturb this experiment several times, does it remain credible?
-```
-
-That is the core of the robustness layer.
-
-### Pulse-level representation
-
-Each pulse candidate is described through three time-dependent controls:
-
-- `Omega(t)`: pulse amplitude,
-- `delta(t)`: detuning,
-- `phi(t)`: phase.
-
-This is important because CryoSwarm-Q does not rank abstract ideas only. It ranks concrete control strategies that can later be simulated, compared, and routed toward Pasqal-oriented workflows.
-
-## Pasqal-Oriented Scope
-
-CryoSwarm-Q is designed to align conceptually with the Pasqal ecosystem rather than replace it.
-
-Primary alignment targets:
-
-- Pulser for neutral-atom register and pulse sequence representation,
-- Pasqal Cloud SDK for future batch submission and execution workflows,
-- Pasqal emulators such as EMU-SV and EMU-MPS for backend routing logic,
-- QoolQit for higher-level analog problem construction where relevant.
-
-The project value is the orchestration layer above these building blocks: candidate generation, robust evaluation, routing, ranking, and memory.
-
-## Proposed Repository Modules
-
-The first functional repository structure should converge toward:
-
-- `agents/`
-- `orchestration/`
-- `simulation/`
-- `scoring/`
-- `pasqal_adapters/`
-- `memory/`
-- `dashboard/`
-- `api/`
-
-## Technology Direction
-
-Primary ecosystem choices:
-
-- Python
-- Pulser
-- Pasqal Cloud SDK
-- QoolQit
-- PyTorch
-- FastAPI
-- Streamlit
-- ROCm / AMD MI300X
-
-Optional supporting choices:
-
-- Ray for distributed search or campaign execution,
-- SQLite or MongoDB for experiment memory,
-- GitHub Pages for project-facing documentation,
-- Sentry for runtime monitoring.
-
-## MongoDB Atlas
-
-The repository is configured to support MongoDB Atlas through environment variables only. Credentials must stay in `.env` and must never be committed.
-
-Required variables:
+Required environment variables are defined in [`.env.example`](/c:/Users/danie/Documents/CRYOSWARRM-Q/.env.example):
 
 - `MONGODB_URI`
-- `MONGODB_DATABASE`
-- `MONGODB_COLLECTION`
+- `MONGODB_DB`
+- `APP_ENV`
+- `LOG_LEVEL`
 
-To test the connection and insert one document:
+Optional placeholders are included for future Pasqal Cloud integration:
+
+- `PASQAL_CLOUD_USERNAME`
+- `PASQAL_CLOUD_PASSWORD`
+- `PASQAL_CLOUD_PROJECT_ID`
+
+The base prototype does not require Pasqal credentials.
+
+## Install
 
 ```powershell
 py -m pip install -r requirements.txt
+```
+
+## Local Run
+
+Initialize and test MongoDB:
+
+```powershell
 py scripts/test_mongo.py
 ```
 
-The script loads `.env`, pings the Atlas deployment, and inserts one test document into the configured collection.
+Seed one goal manually:
 
-## Why AMD MI300X Matters
+```powershell
+py scripts/seed_demo_goal.py
+```
 
-The AMD MI300X direction is relevant only if it accelerates the experimental search loop. The project should use GPU resources for parallel candidate evaluation, robustness sweeps, surrogate scoring, or branch-level search acceleration. It should not consume accelerator resources for superficial UI tasks.
+Run the full demo pipeline:
 
-## Deliverable Target
+```powershell
+py scripts/run_demo_pipeline.py
+```
 
-The first functional milestone is planned for May 2026. A credible first deliverable should include:
+## FastAPI Backend
 
-- a visible multi-agent architecture,
-- a candidate generation pipeline,
-- a scoring and robustness layer,
-- backend or emulator routing,
-- campaign-style ranking,
-- a dashboard for inspection,
-- and documentation that explains the system in research-grade terms.
+Start the API:
 
-## Success Criteria
+```powershell
+py -m uvicorn apps.api.main:app --reload
+```
 
-A meaningful milestone is reached when the repository can:
+Useful routes:
 
-1. accept an experiment objective,
-2. generate several candidate configurations,
-3. evaluate them under explicit constraints,
-4. rank them with readable justification,
-5. and expose enough trace data for a researcher to understand why one path was preferred over another.
+- `GET /health`
+- `POST /goals`
+- `GET /goals/{goal_id}`
+- `POST /campaigns/run-demo`
+- `GET /campaigns/{campaign_id}`
+- `GET /campaigns/{campaign_id}/candidates`
 
-## What This Repository Must Avoid
+## Streamlit Dashboard
 
-CryoSwarm-Q should not become:
+Start the dashboard:
 
-- a generic LLM wrapper,
-- a chatbot interface,
-- a vague autonomous agent demo,
-- a purely visual prototype with no orchestration depth,
-- or a fake quantum project detached from Pulser-style workflows.
+```powershell
+py -m streamlit run apps/dashboard/app.py
+```
 
-## References
+The dashboard provides:
 
-The current design direction is informed by the Pasqal documentation ecosystem and the AMD Developer Cloud hackathon context referenced during project definition:
+- project overview
+- demo goal form
+- latest campaigns
+- ranked candidates
+- agent decisions
+- robustness reports
 
-- Pasqal Documentation: https://docs.pasqal.com/
-- Pulser: https://docs.pasqal.com/pulser/
-- Programming a neutral-atom QPU: https://docs.pasqal.com/pulser/programming/
-- QoolQit: https://docs.pasqal.com/qoolqit/
-- Pulser Studio: https://docs.pasqal.com/pulserstudio/
-- Pasqal Cloud: https://docs.pasqal.com/cloud/
-- Pasqal emulators: https://docs.pasqal.com/cloud/emulators/
-- AMD Developer Hackathon context: https://lablab.ai/ai-hackathons/amd-developer
+## Pasqal Tooling Note
 
-## Status
+This repository is designed to be compatible in spirit with public Pulser and Pasqal-oriented workflows. It does not claim access to proprietary Pasqal systems.
 
-This repository is currently at the foundation stage. The immediate goal is to establish the architecture, the language of the project, and the initial implementation scaffolding for a serious neutral-atom experiment orchestration prototype.
+Current adapter posture:
+
+- `Pulser`: integrated where possible for register-compatible summaries
+- `QoolQit`: optional adapter with graceful fallback if the package is unavailable
+- `Pasqal Cloud`: safe placeholder adapter with mock-safe behavior unless credentials are present
+
+## Current Limitations
+
+- robustness evaluation is deterministic and synthetic rather than hardware-calibrated
+- backend routing is rule-based
+- full Pulser sequence serialization is represented as structured summaries when deeper runtime integration is unavailable
+- QoolQit and Pasqal Cloud live integration are intentionally optional and conservative
+- the dashboard is a first inspection surface, not a production UI
+
+## Roadmap
+
+Near-term roadmap:
+
+- deepen Pulser-backed sequence construction and serialization
+- add richer device-constraint modeling for neutral-atom geometries
+- improve robustness estimators with more explicit perturbation families
+- expand campaign memory retrieval and reuse
+- add richer API endpoints for decision traces and robustness analytics
+- harden the optional Pasqal Cloud adapter for real authenticated submission workflows
+
+## Testing
+
+Run the initial tests with:
+
+```powershell
+py -m pytest
+```

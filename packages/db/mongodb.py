@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from pymongo import MongoClient
+from pymongo.database import Database
+
+from packages.core.config import Settings, get_settings
+
+
+COLLECTION_NAMES = [
+    "experiment_goals",
+    "register_candidates",
+    "sequence_candidates",
+    "robustness_reports",
+    "campaigns",
+    "agent_decisions",
+    "memory",
+    "evaluation_results",
+]
+
+_CLIENT: MongoClient | None = None
+
+
+def get_mongo_client(settings: Settings | None = None) -> MongoClient:
+    global _CLIENT
+    settings = settings or get_settings()
+    if not settings.mongodb_uri:
+        raise RuntimeError("MONGODB_URI is not configured.")
+    if _CLIENT is None:
+        _CLIENT = MongoClient(settings.mongodb_uri)
+    return _CLIENT
+
+
+def get_database(settings: Settings | None = None) -> Database:
+    settings = settings or get_settings()
+    client = get_mongo_client(settings)
+    return client[settings.mongodb_db]
+
+
+def close_mongo_client() -> None:
+    global _CLIENT
+    if _CLIENT is not None:
+        _CLIENT.close()
+        _CLIENT = None
