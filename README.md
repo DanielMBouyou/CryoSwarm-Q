@@ -97,38 +97,44 @@ The target end-to-end flow is:
 7. Rank the campaign by utility, robustness, and feasibility.
 8. Persist the reasoning and outcomes in experiment memory.
 
-## Mathematical Framing
+## Decision Logic
 
-Each candidate experiment `x` is evaluated through a utility function of the form:
-
-```text
-J(x) = alpha*F(x) + beta*R(x) - gamma*C(x) - delta*L(x)
-```
-
-Where:
-
-- `F(x)` is nominal quality or fidelity,
-- `R(x)` is robustness under perturbation,
-- `C(x)` is evaluation or execution cost,
-- `L(x)` is latency or scheduling penalty.
-
-The goal is not to find the most optimistic theoretical candidate. The goal is to identify the most usable candidate under realistic constraints.
-
-Robustness is treated as an expectation over perturbations:
+The ranking model is intentionally simple to explain:
 
 ```text
-R(x) = E_{eta ~ P}[S(x, eta)]
+candidate score = scientific quality + robustness - compute cost - delay penalty
 ```
 
-In practice, this can be approximated through sweeps, Monte Carlo evaluation, or targeted stress tests.
+In practical terms, CryoSwarm-Q should prefer candidates that:
 
-For pulse-level control, a candidate can be represented as:
+- produce a strong experimental signal,
+- remain stable under noise and device imperfections,
+- do not consume unnecessary simulation or execution resources,
+- and can be evaluated in a reasonable campaign timeline.
+
+This matters because the project is not looking for the most optimistic theoretical result. It is looking for the most usable experiment candidate under realistic conditions.
+
+### Robustness, in plain language
+
+Robustness means a candidate should still perform reasonably well when the environment is no longer ideal. Instead of trusting a single perfect run, the system evaluates the same candidate across multiple perturbation scenarios such as noise, parameter drift, or control variation.
+
+The practical question is:
 
 ```text
-pi(t) = (Omega(t), delta(t), phi(t))
+If we perturb this experiment several times, does it remain credible?
 ```
 
-This makes control complexity a first-class concern rather than an afterthought.
+That is the core of the robustness layer.
+
+### Pulse-level representation
+
+Each pulse candidate is described through three time-dependent controls:
+
+- `Omega(t)`: pulse amplitude,
+- `delta(t)`: detuning,
+- `phi(t)`: phase.
+
+This is important because CryoSwarm-Q does not rank abstract ideas only. It ranks concrete control strategies that can later be simulated, compared, and routed toward Pasqal-oriented workflows.
 
 ## Pasqal-Oriented Scope
 
