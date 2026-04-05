@@ -46,6 +46,8 @@ class ProblemFramingAgent(BaseAgent):
                 SequenceFamily.GLOBAL_RAMP,
                 SequenceFamily.DETUNING_SCAN,
                 SequenceFamily.ADIABATIC_SWEEP,
+                SequenceFamily.CONSTANT_DRIVE,
+                SequenceFamily.BLACKMAN_SWEEP,
             ],
             target_density=target_density,
             scoring_weights=goal.priority_weights,
@@ -57,14 +59,14 @@ class ProblemFramingAgent(BaseAgent):
                 "goal_constraints": goal.constraints,
                 "memory_record_count": len(recent_memory),
                 "remembered_backends": remembered_backends,
-                "max_register_candidates": 2,
+                "max_register_candidates": 4,
             },
         )
 
     def _resolve_layouts(self, preferred_geometry: str) -> list[str]:
         geometry = preferred_geometry.lower()
         if geometry in {"square", "2d"}:
-            return ["square", "triangular", "line"]
+            return ["square", "triangular", "honeycomb"]
         if geometry in {"line", "1d"}:
-            return ["line", "zigzag", "square"]
-        return ["square", "line", "triangular"]
+            return ["line", "zigzag", "ring"]
+        return ["square", "line", "triangular", "ring"]

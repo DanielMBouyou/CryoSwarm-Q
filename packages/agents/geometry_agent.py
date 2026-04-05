@@ -5,6 +5,8 @@ from math import ceil
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate
+import numpy as np
+
 from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
 
 
@@ -74,14 +76,33 @@ class GeometryAgent(BaseAgent):
         return list(dict.fromkeys(ordered))[:3]
 
     def _spacing_values(self, memory_records: list[MemoryRecord]) -> list[float]:
-        remembered_spacings = [
-            float(record.signals["spacing_um"])
-            for record in memory_records
-            if "spacing_um" in record.signals
-        ]
-        baseline = [5.5, 7.0]
+        remembered_spacings = []
+        avoided_spacings = set()
+        for record in memory_records:
+            spacing = record.signals.get("spacing_um")
+            if spacing is None:
+                continue
+            spacing_value = round(float(spacing), 2)
+            confidence = float(record.signals.get("confidence", 0.0))
+            if record.lesson_type == "failure_pattern" and "high_noise_sensitivity" in record.reusable_tags:
+                avoided_spacings.add(spacing_value)
+                continue
+            remembered_spacings.append(spacing_value)
+            if confidence > 0.7:
+                remembered_spacings.extend(
+                    [
+                        round(max(5.0, spacing_value - 0.5), 2),
+                        round(spacing_value + 0.5, 2),
+                    ]
+                )
+        baseline = [7.0, 8.5]
         ordered = remembered_spacings + baseline
-        return list(dict.fromkeys(round(value, 2) for value in ordered))[:2]
+        unique = [
+            round(value, 2)
+            for value in ordered
+            if round(value, 2) not in avoided_spacings
+        ]
+        return list(dict.fromkeys(unique))[:4]
 
     def _feasibility_score(self, atom_count: int, min_distance_um: float, blockade_pair_count: int) -> float:
         spacing_margin = min(min_distance_um / 5.0, 1.5)
@@ -116,5 +137,29 @@ class GeometryAgent(BaseAgent):
                 (float(index) * spacing, 0.0 if index % 2 == 0 else spacing * 0.5)
                 for index in range(atom_count)
             ]
+
+        if layout == "ring":
+            radius = spacing / (2.0 * np.sin(np.pi / max(atom_count, 2)))
+            import math
+            return [
+                (
+                    round(radius * math.cos(2 * math.pi * k / atom_count), 6),
+                    round(radius * math.sin(2 * math.pi * k / atom_count), 6),
+                )
+                for k in range(atom_count)
+            ]
+
+        if layout == "honeycomb":
+            coordinates = []
+            cols = max(2, int(atom_count**0.5) + 1)
+            for row_idx in range(atom_count):
+                r = row_idx // cols
+                c = row_idx % cols
+                x = c * spacing + (0.5 * spacing if r % 2 else 0.0)
+                y = r * spacing * 0.866
+                coordinates.append((round(x, 6), round(y, 6)))
+                if len(coordinates) == atom_count:
+                    return coordinates
+            return coordinates
 
         return [(float(index) * spacing, 0.0) for index in range(atom_count)]

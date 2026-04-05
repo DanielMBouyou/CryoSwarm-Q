@@ -26,6 +26,7 @@ class Settings(BaseModel):
     api_base_url: str = "http://localhost:8000"
     pasqal_cloud_username: str = ""
     pasqal_cloud_password: str = ""
+    pasqal_token: str = ""
     pasqal_cloud_project_id: str = ""
     default_collection: str = Field(default="connection_tests")
 
@@ -35,13 +36,15 @@ class Settings(BaseModel):
 
     @property
     def has_pasqal_cloud_credentials(self) -> bool:
-        return all(
+        has_token_auth = bool(self.pasqal_token and self.pasqal_cloud_project_id)
+        has_user_password_auth = all(
             [
                 self.pasqal_cloud_username,
                 self.pasqal_cloud_password,
                 self.pasqal_cloud_project_id,
             ]
         )
+        return has_token_auth or has_user_password_auth
 
 
 @lru_cache(maxsize=1)
@@ -57,6 +60,7 @@ def get_settings() -> Settings:
         api_base_url=os.getenv("API_BASE_URL", "http://localhost:8000"),
         pasqal_cloud_username=os.getenv("PASQAL_CLOUD_USERNAME", ""),
         pasqal_cloud_password=os.getenv("PASQAL_CLOUD_PASSWORD", ""),
+        pasqal_token=os.getenv("PASQAL_TOKEN", ""),
         pasqal_cloud_project_id=os.getenv("PASQAL_CLOUD_PROJECT_ID", ""),
         default_collection=os.getenv("MONGODB_COLLECTION", "connection_tests"),
     )

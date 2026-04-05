@@ -24,6 +24,8 @@ dependencies = [
   "streamlit>=1.38",
   "requests>=2.32",
   "numpy>=2.1",
+  "scipy>=1.13",
+  "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +41,10 @@ include = ["apps*", "packages*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

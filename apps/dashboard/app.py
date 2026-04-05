@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import streamlit as st
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -10,10 +11,83 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from packages.core.config import get_settings
-from packages.core.models import DemoGoalRequest
+from packages.core.models import DemoGoalRequest, RegisterCandidate, RobustnessReport
 from packages.db.init_db import initialize_database
 from packages.db.repositories import CryoSwarmRepository
 from packages.orchestration.runner import run_demo_campaign
+
+
+def _load_register_candidates(repository: CryoSwarmRepository, campaign_id: str) -> dict[str, RegisterCandidate]:
+    cursor = repository.collections["register_candidates"].find({"campaign_id": campaign_id})
+    return {
+        document["_id"]: RegisterCandidate.model_validate({k: v for k, v in document.items() if k != "_id"})
+        for document in cursor
+    }
+
+
+def _render_register_plot(candidate: RegisterCandidate) -> None:
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    xs, ys = zip(*candidate.coordinates)
+    ax.scatter(xs, ys, s=100, c="royalblue")
+    ax.set_xlabel("x (um)")
+    ax.set_ylabel("y (um)")
+    ax.set_aspect("equal")
+    ax.set_title(f"Register: {candidate.label}")
+    for x_value, y_value in candidate.coordinates:
+        circle = plt.Circle(
+            (x_value, y_value),
+            candidate.blockade_radius_um,
+            fill=False,
+            color="crimson",
+            linestyle="--",
+            alpha=0.25,
+        )
+        ax.add_patch(circle)
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def _render_robustness_chart(reports: list[RobustnessReport]) -> None:
+    if not reports:
+        return
+    top_reports = reports[:5]
+    labels = [report.sequence_candidate_id[-6:] for report in top_reports]
+    nominal = [report.nominal_score for report in top_reports]
+    average = [report.perturbation_average for report in top_reports]
+    worst = [report.worst_case_score for report in top_reports]
+
+    x_positions = list(range(len(top_reports)))
+    width = 0.25
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    ax.bar([x - width for x in x_positions], nominal, width=width, label="Nominal")
+    ax.bar(x_positions, average, width=width, label="Average")
+    ax.bar([x + width for x in x_positions], worst, width=width, label="Worst")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(labels)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Score")
+    ax.set_title("Robustness Comparison Across Top Candidates")
+    ax.legend()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def _render_noise_sensitivity(report: RobustnessReport) -> None:
+    scenario_order = ["low_noise", "medium_noise", "stressed_noise"]
+    if not report.scenario_scores:
+        return
+    labels = [label for label in scenario_order if label in report.scenario_scores]
+    values = [report.scenario_scores[label] for label in labels]
+    if not labels:
+        return
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(labels, values, marker="o", linewidth=2, color="darkgreen")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Observable score")
+    ax.set_title(f"Noise Sensitivity for {report.sequence_candidate_id}")
+    st.pyplot(fig)
+    plt.close(fig)
 
 
 st.set_page_config(page_title="CryoSwarm-Q", layout="wide")
@@ -24,8 +98,9 @@ st.caption(
     "Hardware-aware multi-agent orchestration for neutral-atom experiment campaigns."
 )
 st.write(
-    "This dashboard runs the initial research-grade prototype locally, stores campaign "
-    "artifacts in MongoDB Atlas, and exposes ranked experiment candidates and agent decisions."
+    "This dashboard runs the research-grade prototype locally, stores campaign "
+    "artifacts in MongoDB Atlas, and exposes ranked candidates, agent decisions, "
+    "robustness metrics, and register-level physics views."
 )
 
 if not settings.has_mongodb:
@@ -90,6 +165,8 @@ selected_campaign = next(item for item in latest_campaigns if item.id == selecte
 ranked_candidates = repository.list_candidates_for_campaign(selected_campaign_id)
 decisions = repository.list_agent_decisions(selected_campaign_id)
 reports = repository.list_robustness_reports(selected_campaign_id)
+register_lookup = _load_register_candidates(repository, selected_campaign_id)
+report_lookup = {report.sequence_candidate_id: report for report in reports}
 
 left_col, right_col = st.columns(2)
 with left_col:
@@ -110,6 +187,35 @@ with right_col:
         ],
         use_container_width=True,
     )
+
+st.subheader("Register Visualisation")
+if ranked_candidates:
+    candidate_options = {
+        f"#{candidate.final_rank or '?'} {candidate.sequence_candidate_id}": candidate
+        for candidate in ranked_candidates[:5]
+    }
+    selected_candidate_label = st.selectbox("Candidate for register view", list(candidate_options.keys()))
+    selected_candidate = candidate_options[selected_candidate_label]
+    register_candidate = register_lookup.get(selected_candidate.register_candidate_id)
+    if register_candidate:
+        _render_register_plot(register_candidate)
+    else:
+        st.info("No register geometry stored for this candidate yet.")
+else:
+    st.info("No ranked candidates available for visualisation.")
+
+st.subheader("Robustness Comparison")
+_render_robustness_chart(reports)
+
+st.subheader("Noise Sensitivity")
+if ranked_candidates:
+    top_report = report_lookup.get(ranked_candidates[0].sequence_candidate_id)
+    if top_report:
+        _render_noise_sensitivity(top_report)
+    else:
+        st.info("No robustness report found for the top candidate.")
+else:
+    st.info("Run a campaign to generate robustness reports.")
 
 st.subheader("Agent Decisions")
 st.dataframe(
@@ -134,6 +240,7 @@ st.dataframe(
             "nominal_score": report.nominal_score,
             "robustness_score": report.robustness_score,
             "perturbation_average": report.perturbation_average,
+            "worst_case_score": report.worst_case_score,
         }
         for report in reports
     ],

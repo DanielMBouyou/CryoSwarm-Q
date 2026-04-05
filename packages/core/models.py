@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.core.enums import (
     AgentName,
@@ -40,14 +40,21 @@ class ScoringWeights(CryoSwarmModel):
     gamma: float = 0.10
     delta: float = 0.10
 
+    @model_validator(mode="after")
+    def validate_weight_sum(self) -> "ScoringWeights":
+        total = self.alpha + self.beta + self.gamma + self.delta
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError("Scoring weights must sum to 1.0.")
+        return self
+
 
 class ExperimentGoal(CryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("goal"))
-    title: str
+    title: str = Field(min_length=3, max_length=200)
     scientific_objective: str
     target_observable: str = "rydberg_density"
     priority: str = "balanced"
-    desired_atom_count: int = 6
+    desired_atom_count: int = Field(default=6, ge=2, le=50)
     preferred_geometry: str = "mixed"
     constraints: JsonDict = Field(default_factory=dict)
     priority_weights: ScoringWeights = Field(default_factory=ScoringWeights)
@@ -58,11 +65,11 @@ class ExperimentGoal(CryoSwarmModel):
 
 
 class ExperimentGoalCreate(CryoSwarmModel):
-    title: str
+    title: str = Field(min_length=3, max_length=200)
     scientific_objective: str
     target_observable: str = "rydberg_density"
     priority: str = "balanced"
-    desired_atom_count: int = 6
+    desired_atom_count: int = Field(default=6, ge=2, le=50)
     preferred_geometry: str = "mixed"
     constraints: JsonDict = Field(default_factory=dict)
     metadata: JsonDict = Field(default_factory=dict)
@@ -73,8 +80,8 @@ class ExperimentSpec(CryoSwarmModel):
     goal_id: str
     objective_class: str
     target_observable: str
-    min_atoms: int
-    max_atoms: int
+    min_atoms: int = Field(ge=2, le=50)
+    max_atoms: int = Field(ge=2, le=50)
     preferred_layouts: list[str]
     sequence_families: list[SequenceFamily]
     target_density: float = 0.5
@@ -85,6 +92,12 @@ class ExperimentSpec(CryoSwarmModel):
     metadata: JsonDict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
+    @model_validator(mode="after")
+    def validate_atom_window(self) -> "ExperimentSpec":
+        if self.max_atoms < self.min_atoms:
+            raise ValueError("max_atoms must be greater than or equal to min_atoms.")
+        return self
+
 
 class RegisterCandidate(CryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("reg"))
@@ -92,14 +105,14 @@ class RegisterCandidate(CryoSwarmModel):
     spec_id: str
     label: str
     layout_type: str
-    atom_count: int
+    atom_count: int = Field(ge=2)
     coordinates: list[tuple[float, float]]
     device_constraints: JsonDict = Field(default_factory=dict)
-    min_distance_um: float
-    blockade_radius_um: float
+    min_distance_um: float = Field(ge=0.0)
+    blockade_radius_um: float = Field(ge=0.0)
     blockade_pair_count: int
     van_der_waals_matrix: list[list[float]] = Field(default_factory=list)
-    feasibility_score: float
+    feasibility_score: float = Field(ge=0.0, le=1.0)
     status: CandidateStatus = CandidateStatus.PROPOSED
     reasoning_summary: str
     pulser_register_summary: JsonDict | None = None
@@ -115,9 +128,9 @@ class SequenceCandidate(CryoSwarmModel):
     label: str
     sequence_family: SequenceFamily
     channel_id: str = "rydberg_global"
-    duration_ns: int
-    amplitude: float
-    detuning: float
+    duration_ns: int = Field(ge=16)
+    amplitude: float = Field(ge=0.0, le=15.8)
+    detuning: float = Field(ge=-126.0, le=126.0)
     phase: float
     waveform_kind: str = "constant"
     predicted_cost: float
@@ -131,11 +144,11 @@ class SequenceCandidate(CryoSwarmModel):
 class NoiseScenario(CryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("noise"))
     label: NoiseLevel
-    amplitude_jitter: float
+    amplitude_jitter: float = Field(ge=0.0, le=1.0)
     detuning_jitter: float
-    dephasing_rate: float
-    atom_loss_rate: float
-    temperature_uk: float = 50.0
+    dephasing_rate: float = Field(ge=0.0, le=1.0)
+    atom_loss_rate: float = Field(ge=0.0, le=1.0)
+    temperature_uk: float = Field(default=50.0, ge=0.0)
     state_prep_error: float = 0.005
     false_positive_rate: float = 0.01
     false_negative_rate: float = 0.05
@@ -146,11 +159,11 @@ class RobustnessReport(CryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("robust"))
     campaign_id: str
     sequence_candidate_id: str
-    nominal_score: float
+    nominal_score: float = Field(ge=0.0, le=1.0)
     perturbation_average: float
     robustness_penalty: float
-    robustness_score: float
-    worst_case_score: float
+    robustness_score: float = Field(ge=0.0, le=1.0)
+    worst_case_score: float = Field(ge=0.0, le=1.0)
     score_std: float
     target_observable: str
     scenario_scores: FloatDict = Field(default_factory=dict)
@@ -236,20 +249,26 @@ class CampaignState(CryoSwarmModel):
 
 
 class DemoGoalRequest(CryoSwarmModel):
-    title: str = "Robust neutral-atom benchmark sweep"
+    title: str = Field(default="Robust neutral-atom benchmark sweep", min_length=3, max_length=200)
     scientific_objective: str = (
         "Design a small neutral-atom experiment campaign that balances "
         "robustness and execution feasibility."
     )
     target_observable: str = "rydberg_density"
-    desired_atom_count: int = 6
+    desired_atom_count: int = Field(default=6, ge=2, le=50)
     preferred_geometry: str = "mixed"
 
 
 class PipelineSummary(CryoSwarmModel):
     campaign: CampaignState
     goal: ExperimentGoal
-    spec: ExperimentSpec
+    spec: ExperimentSpec | None = None
+    status: str = "COMPLETED"
+    error: str | None = None
+    total_candidates: int = 0
+    ranked_count: int = 0
+    top_candidate_id: str | None = None
+    backend_mix: JsonDict = Field(default_factory=dict)
     top_candidate: EvaluationResult | None = None
     ranked_candidates: list[EvaluationResult] = Field(default_factory=list)
     decisions: list[AgentDecision] = Field(default_factory=list)

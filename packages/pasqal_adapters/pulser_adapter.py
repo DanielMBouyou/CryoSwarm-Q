@@ -12,7 +12,7 @@ from packages.core.models import RegisterCandidate, SequenceCandidate
 try:
     from pulser import Pulse, Register, Sequence
     from pulser.devices import AnalogDevice
-    from pulser.waveforms import RampWaveform
+    from pulser.waveforms import BlackmanWaveform, ConstantWaveform, RampWaveform
 
     PULSER_AVAILABLE = True
     PULSER_IMPORT_ERROR: str | None = None
@@ -89,7 +89,7 @@ def interaction_matrix(coordinates: list[tuple[float, float]]) -> list[list[floa
 
 def summarize_register_physics(
     coordinates: list[tuple[float, float]],
-    reference_amplitude: float = 1.5,
+    reference_amplitude: float = 5.0,
 ) -> RegisterPhysicsSummary:
     if not PULSER_AVAILABLE:
         return RegisterPhysicsSummary(
@@ -196,6 +196,22 @@ def build_sequence_from_candidate(
         detuning_end = _clip_detuning(float(sequence_candidate.metadata.get("detuning_end", -detuning * 0.25)))
         pulse = Pulse.ConstantAmplitude(
             amplitude,
+            RampWaveform(duration_ns, detuning, detuning_end),
+            phase,
+        )
+        sequence.add(pulse, channel_name)
+    elif family == "constant_drive":
+        pulse = Pulse.ConstantPulse(
+            duration_ns,
+            amplitude,
+            detuning,
+            phase,
+        )
+        sequence.add(pulse, channel_name)
+    elif family == "blackman_sweep":
+        detuning_end = _clip_detuning(float(sequence_candidate.metadata.get("detuning_end", -detuning * 0.25)))
+        pulse = Pulse(
+            BlackmanWaveform(duration_ns, amplitude),
             RampWaveform(duration_ns, detuning, detuning_end),
             phase,
         )

@@ -22,6 +22,7 @@ class CampaignStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    NO_CANDIDATES = "no_candidates"
 
 
 class CandidateStatus(StrEnum):
@@ -52,6 +53,8 @@ class SequenceFamily(StrEnum):
     GLOBAL_RAMP = "global_ramp"
     DETUNING_SCAN = "detuning_scan"
     ADIABATIC_SWEEP = "adiabatic_sweep"
+    CONSTANT_DRIVE = "constant_drive"
+    BLACKMAN_SWEEP = "blackman_sweep"
 
 
 class NoiseLevel(StrEnum):
