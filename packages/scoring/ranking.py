@@ -9,6 +9,7 @@ def rank_evaluations(results: list[EvaluationResult]) -> list[EvaluationResult]:
         results,
         key=lambda item: (
             item.objective_score,
+            item.worst_case_score,
             item.robustness_score,
             item.nominal_score,
         ),

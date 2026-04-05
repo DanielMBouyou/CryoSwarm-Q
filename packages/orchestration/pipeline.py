@@ -40,13 +40,14 @@ class CryoSwarmPipeline:
         if self.repository:
             self.repository.create_goal(stored_goal)
 
+        memory_context = self.repository.list_recent_memory(limit=12) if self.repository else []
         campaign = CampaignState(goal_id=stored_goal.id, status=CampaignStatus.RUNNING)
         if self.repository:
             self.repository.create_campaign(campaign)
 
         decisions = []
 
-        spec = self.problem_agent.run(stored_goal)
+        spec = self.problem_agent.run(stored_goal, memory_context)
         campaign = campaign.model_copy(update={"spec_id": spec.id})
         decisions.append(
             self.problem_agent.build_decision(
@@ -59,7 +60,7 @@ class CryoSwarmPipeline:
             )
         )
 
-        registers = self.geometry_agent.run(spec, campaign.id)
+        registers = self.geometry_agent.run(spec, campaign.id, memory_context)
         decisions.append(
             self.geometry_agent.build_decision(
                 campaign_id=campaign.id,
@@ -73,7 +74,9 @@ class CryoSwarmPipeline:
 
         all_sequences = []
         for register_candidate in registers:
-            all_sequences.extend(self.sequence_agent.run(spec, register_candidate, campaign.id))
+            all_sequences.extend(
+                self.sequence_agent.run(spec, register_candidate, campaign.id, memory_context)
+            )
         decisions.append(
             self.sequence_agent.build_decision(
                 campaign_id=campaign.id,
@@ -91,7 +94,8 @@ class CryoSwarmPipeline:
         register_lookup = {item.id: item for item in registers}
 
         for sequence in all_sequences:
-            report = self.noise_agent.run(sequence)
+            register_candidate = register_lookup[sequence.register_candidate_id]
+            report = self.noise_agent.run(spec, register_candidate, sequence)
             reports.append(report)
             decisions.append(
                 self.noise_agent.build_decision(
@@ -118,7 +122,7 @@ class CryoSwarmPipeline:
             )
 
             objective_score = compute_objective_score(
-                fidelity=report.nominal_score,
+                observable_score=report.nominal_score,
                 robustness=report.robustness_score,
                 cost=backend_choice.estimated_cost,
                 latency=backend_choice.estimated_latency,
@@ -132,6 +136,8 @@ class CryoSwarmPipeline:
                     register_candidate_id=sequence.register_candidate_id,
                     nominal_score=report.nominal_score,
                     robustness_score=report.robustness_score,
+                    worst_case_score=report.worst_case_score,
+                    observable_score=float(report.nominal_observables.get("observable_score", report.nominal_score)),
                     objective_score=objective_score,
                     backend_choice=backend_choice.recommended_backend,
                     estimated_cost=backend_choice.estimated_cost,
@@ -143,6 +149,7 @@ class CryoSwarmPipeline:
                     metadata={
                         "register_label": register_lookup[sequence.register_candidate_id].label,
                         "backend_rationale": backend_choice.rationale,
+                        "nominal_observables": report.nominal_observables,
                     },
                 )
             )
@@ -184,7 +191,13 @@ class CryoSwarmPipeline:
             )
         )
 
-        memory_records = self.memory_agent.run(campaign.id, ranked_candidates)
+        sequence_lookup = {item.id: item for item in all_sequences}
+        memory_records = self.memory_agent.run(
+            campaign.id,
+            ranked_candidates,
+            sequence_lookup,
+            register_lookup,
+        )
         decisions.append(
             self.memory_agent.build_decision(
                 campaign_id=campaign.id,

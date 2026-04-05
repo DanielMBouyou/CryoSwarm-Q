@@ -77,6 +77,7 @@ class ExperimentSpec(CryoSwarmModel):
     max_atoms: int
     preferred_layouts: list[str]
     sequence_families: list[SequenceFamily]
+    target_density: float = 0.5
     scoring_weights: ScoringWeights = Field(default_factory=ScoringWeights)
     perturbation_budget: int = 3
     latency_budget: float = 0.30
@@ -94,6 +95,10 @@ class RegisterCandidate(CryoSwarmModel):
     atom_count: int
     coordinates: list[tuple[float, float]]
     device_constraints: JsonDict = Field(default_factory=dict)
+    min_distance_um: float
+    blockade_radius_um: float
+    blockade_pair_count: int
+    van_der_waals_matrix: list[list[float]] = Field(default_factory=list)
     feasibility_score: float
     status: CandidateStatus = CandidateStatus.PROPOSED
     reasoning_summary: str
@@ -109,10 +114,12 @@ class SequenceCandidate(CryoSwarmModel):
     register_candidate_id: str
     label: str
     sequence_family: SequenceFamily
+    channel_id: str = "rydberg_global"
     duration_ns: int
     amplitude: float
     detuning: float
     phase: float
+    waveform_kind: str = "constant"
     predicted_cost: float
     status: CandidateStatus = CandidateStatus.PROPOSED
     reasoning_summary: str
@@ -128,6 +135,10 @@ class NoiseScenario(CryoSwarmModel):
     detuning_jitter: float
     dephasing_rate: float
     atom_loss_rate: float
+    temperature_uk: float = 50.0
+    state_prep_error: float = 0.005
+    false_positive_rate: float = 0.01
+    false_negative_rate: float = 0.05
     metadata: JsonDict = Field(default_factory=dict)
 
 
@@ -139,7 +150,13 @@ class RobustnessReport(CryoSwarmModel):
     perturbation_average: float
     robustness_penalty: float
     robustness_score: float
+    worst_case_score: float
+    score_std: float
+    target_observable: str
     scenario_scores: FloatDict = Field(default_factory=dict)
+    nominal_observables: JsonDict = Field(default_factory=dict)
+    scenario_observables: dict[str, JsonDict] = Field(default_factory=dict)
+    hamiltonian_metrics: JsonDict = Field(default_factory=dict)
     reasoning_summary: str
     metadata: JsonDict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
@@ -150,6 +167,7 @@ class BackendChoice(CryoSwarmModel):
     campaign_id: str
     sequence_candidate_id: str
     recommended_backend: BackendType
+    state_dimension: int
     estimated_cost: float
     estimated_latency: float
     rationale: str
@@ -177,6 +195,8 @@ class EvaluationResult(CryoSwarmModel):
     register_candidate_id: str
     nominal_score: float
     robustness_score: float
+    worst_case_score: float
+    observable_score: float
     objective_score: float
     backend_choice: BackendType
     estimated_cost: float

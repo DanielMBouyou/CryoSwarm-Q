@@ -14,8 +14,14 @@ from packages.orchestration.runner import run_demo_campaign
 
 
 def main() -> int:
-    initialize_database()
-    repository = CryoSwarmRepository()
+    repository = None
+    try:
+        initialize_database()
+        repository = CryoSwarmRepository()
+    except Exception as exc:
+        print(f"MongoDB unavailable for demo persistence: {exc}")
+        print("Running the demo pipeline without persistence.")
+
     summary = run_demo_campaign(repository=repository)
     print(f"Campaign {summary.campaign.id} completed.")
     if summary.top_candidate:
@@ -25,7 +31,8 @@ def main() -> int:
             summary.top_candidate.backend_choice.value,
             summary.top_candidate.objective_score,
         )
-    close_mongo_client()
+    if repository is not None:
+        close_mongo_client()
     return 0
 
 

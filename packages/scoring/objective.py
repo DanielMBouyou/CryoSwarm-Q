@@ -7,7 +7,7 @@ DEFAULT_WEIGHTS = ScoringWeights()
 
 
 def compute_objective_score(
-    fidelity: float,
+    observable_score: float,
     robustness: float,
     cost: float,
     latency: float,
@@ -15,7 +15,7 @@ def compute_objective_score(
 ) -> float:
     active_weights = weights or DEFAULT_WEIGHTS
     score = (
-        active_weights.alpha * fidelity
+        active_weights.alpha * observable_score
         + active_weights.beta * robustness
         - active_weights.gamma * cost
         - active_weights.delta * latency

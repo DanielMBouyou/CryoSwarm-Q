@@ -2,15 +2,33 @@ from __future__ import annotations
 
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
-from packages.core.models import RobustnessReport, SequenceCandidate
+from packages.core.models import ExperimentSpec, RegisterCandidate, RobustnessReport, SequenceCandidate
 from packages.simulation.evaluators import evaluate_candidate_robustness
 
 
 class NoiseRobustnessAgent(BaseAgent):
     agent_name = AgentName.NOISE
 
-    def run(self, sequence_candidate: SequenceCandidate) -> RobustnessReport:
-        nominal, scenario_scores, average, penalty, robustness = evaluate_candidate_robustness(
+    def run(
+        self,
+        spec: ExperimentSpec,
+        register_candidate: RegisterCandidate,
+        sequence_candidate: SequenceCandidate,
+    ) -> RobustnessReport:
+        (
+            nominal,
+            scenario_scores,
+            average,
+            worst_score,
+            score_std,
+            penalty,
+            robustness,
+            nominal_observables,
+            scenario_observables,
+            hamiltonian_metrics,
+        ) = evaluate_candidate_robustness(
+            spec,
+            register_candidate,
             sequence_candidate
         )
         return RobustnessReport(
@@ -20,10 +38,17 @@ class NoiseRobustnessAgent(BaseAgent):
             perturbation_average=average,
             robustness_penalty=penalty,
             robustness_score=robustness,
+            worst_case_score=worst_score,
+            score_std=score_std,
+            target_observable=spec.target_observable,
             scenario_scores=scenario_scores,
+            nominal_observables=nominal_observables,
+            scenario_observables=scenario_observables,
+            hamiltonian_metrics=hamiltonian_metrics,
             reasoning_summary=(
-                f"Evaluated nominal={nominal:.3f} with perturbation average={average:.3f} "
-                f"for sequence {sequence_candidate.label}."
+                f"Evaluated {sequence_candidate.label} with actual Pulser emulation. "
+                f"Nominal observable score={nominal:.3f}, worst-case={worst_score:.3f}, "
+                f"robustness={robustness:.3f}."
             ),
             metadata={
                 "sequence_family": sequence_candidate.sequence_family.value,

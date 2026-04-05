@@ -1,6 +1,6 @@
 # CryoSwarm-Q
 
-CryoSwarm-Q is a hardware-aware multi-agent research software prototype for neutral-atom experimentation. It accepts a structured experiment goal, proposes register and pulse-sequence candidates, evaluates them under synthetic noise and feasibility constraints, recommends an evaluation backend, ranks the campaign, stores traceable decisions in MongoDB Atlas, and exposes the workflow through FastAPI and Streamlit.
+CryoSwarm-Q is a hardware-aware multi-agent research software prototype for neutral-atom experimentation. It accepts a structured experiment goal, proposes register and pulse-sequence candidates, builds real Pulser sequences on a public analog device model, evaluates them with `QutipEmulator`, measures physically meaningful observables under noise and feasibility constraints, recommends an evaluation backend, ranks the campaign, stores traceable decisions in MongoDB Atlas, and exposes the workflow through FastAPI and Streamlit.
 
 ## Architecture Overview
 
@@ -25,7 +25,7 @@ CryoSwarm-Q currently includes these explicit agents:
 - `ProblemFramingAgent`: converts a research goal into a structured experiment specification
 - `GeometryAgent`: proposes plausible neutral-atom register layouts
 - `SequenceAgent`: generates pulse-level control candidates compatible with Pulser-oriented workflows
-- `NoiseRobustnessAgent`: evaluates nominal and perturbed candidate quality
+- `NoiseRobustnessAgent`: evaluates nominal and perturbed candidate quality from actual Pulser emulation outputs
 - `BackendRoutingAgent`: recommends `local_pulser_simulation`, `emu_sv_candidate`, or `emu_mps_candidate`
 - `CampaignAgent`: ranks the full portfolio and updates campaign state
 - `ResultsAgent`: builds the readable campaign summary
@@ -129,16 +129,16 @@ This repository is designed to be compatible in spirit with public Pulser and Pa
 
 Current adapter posture:
 
-- `Pulser`: integrated where possible for register-compatible summaries
-- `QoolQit`: optional adapter with graceful fallback if the package is unavailable
+- `Pulser`: used for public-device register validation, real `Sequence` construction, and emulator-backed observables
+- `QoolQit`: optional adapter layer, installable locally, still isolated behind a conservative interface
 - `Pasqal Cloud`: safe placeholder adapter with mock-safe behavior unless credentials are present
 
 ## Current Limitations
 
-- robustness evaluation is deterministic and synthetic rather than hardware-calibrated
-- backend routing is rule-based
-- full Pulser sequence serialization is represented as structured summaries when deeper runtime integration is unavailable
-- QoolQit and Pasqal Cloud live integration are intentionally optional and conservative
+- the physical core now uses small-system Pulser emulation, but it is still a prototype rather than a calibrated hardware model
+- robustness uses real Pulser noise parameters, but not a lab-calibrated experimental noise identification workflow
+- backend routing is still rule-based, even though it now uses physical scale and robustness metrics
+- Pasqal Cloud live submission remains intentionally disabled by default
 - the dashboard is a first inspection surface, not a production UI
 
 ## Roadmap

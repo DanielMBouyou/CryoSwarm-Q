@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.agents.base import BaseAgent
+from packages.core.models import MemoryRecord
 from packages.core.enums import AgentName, SequenceFamily
 from packages.core.models import ExperimentGoal, ExperimentSpec
 
@@ -8,7 +9,7 @@ from packages.core.models import ExperimentGoal, ExperimentSpec
 class ProblemFramingAgent(BaseAgent):
     agent_name = AgentName.PROBLEM_FRAMING
 
-    def run(self, goal: ExperimentGoal) -> ExperimentSpec:
+    def run(self, goal: ExperimentGoal, memory_records: list[MemoryRecord] | None = None) -> ExperimentSpec:
         objective_text = f"{goal.title} {goal.scientific_objective}".lower()
 
         if "robust" in objective_text or "noise" in objective_text:
@@ -22,6 +23,12 @@ class ProblemFramingAgent(BaseAgent):
         desired_atoms = max(goal.desired_atom_count, 3)
         min_atoms = max(3, desired_atoms - 2)
         max_atoms = desired_atoms + 2
+        target_density = 0.5
+        if "single excitation" in objective_text:
+            target_density = 1.0 / max(desired_atoms, 1)
+
+        recent_memory = memory_records or []
+        remembered_backends = [record.signals.get("backend_choice") for record in recent_memory]
 
         reasoning_summary = (
             f"Framed '{goal.title}' as {objective_class} with {min_atoms}-{max_atoms} atoms, "
@@ -40,6 +47,7 @@ class ProblemFramingAgent(BaseAgent):
                 SequenceFamily.DETUNING_SCAN,
                 SequenceFamily.ADIABATIC_SWEEP,
             ],
+            target_density=target_density,
             scoring_weights=goal.priority_weights,
             perturbation_budget=3,
             latency_budget=0.30 if goal.priority == "balanced" else 0.20,
@@ -47,6 +55,9 @@ class ProblemFramingAgent(BaseAgent):
             metadata={
                 "priority": goal.priority,
                 "goal_constraints": goal.constraints,
+                "memory_record_count": len(recent_memory),
+                "remembered_backends": remembered_backends,
+                "max_register_candidates": 2,
             },
         )
 

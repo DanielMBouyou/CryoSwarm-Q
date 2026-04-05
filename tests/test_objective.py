@@ -4,7 +4,7 @@ from packages.scoring.objective import compute_objective_score
 
 def test_objective_score_uses_weighted_terms() -> None:
     score = compute_objective_score(
-        fidelity=0.8,
+        observable_score=0.8,
         robustness=0.7,
         cost=0.2,
         latency=0.1,

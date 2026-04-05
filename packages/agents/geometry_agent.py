@@ -4,50 +4,92 @@ from math import ceil
 
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
-from packages.core.models import ExperimentSpec, RegisterCandidate
-from packages.pasqal_adapters.pulser_adapter import create_simple_register
+from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate
+from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
 
 
 class GeometryAgent(BaseAgent):
     agent_name = AgentName.GEOMETRY
 
-    def run(self, spec: ExperimentSpec, campaign_id: str) -> list[RegisterCandidate]:
+    def run(
+        self,
+        spec: ExperimentSpec,
+        campaign_id: str,
+        memory_records: list[MemoryRecord] | None = None,
+    ) -> list[RegisterCandidate]:
         atom_targets = self._atom_targets(spec.min_atoms, spec.max_atoms)
-        layouts = spec.preferred_layouts[:3]
+        layouts = self._layout_order(spec.preferred_layouts, memory_records or [])
+        spacing_values = self._spacing_values(memory_records or [])
         candidates: list[RegisterCandidate] = []
+        max_candidates = int(spec.metadata.get("max_register_candidates", 4))
 
-        for index, atom_count in enumerate(atom_targets):
-            layout = layouts[index % len(layouts)]
-            coordinates = self._coordinates_for_layout(layout, atom_count)
-            feasibility = round(max(0.55, 0.90 - atom_count * 0.025), 4)
-            candidates.append(
-                RegisterCandidate(
-                    campaign_id=campaign_id,
-                    spec_id=spec.id,
-                    label=f"{layout}-{atom_count}",
-                    layout_type=layout,
-                    atom_count=atom_count,
-                    coordinates=coordinates,
-                    device_constraints={
-                        "min_spacing_um": 5.0,
-                        "max_atoms_assumed": 24,
-                    },
-                    feasibility_score=feasibility,
-                    reasoning_summary=(
-                        f"Proposed a {layout} layout with {atom_count} atoms as a plausible "
-                        "neutral-atom register candidate."
-                    ),
-                    pulser_register_summary=create_simple_register(coordinates),
-                    metadata={"layout_rank": index + 1},
-                )
-            )
+        for atom_count in atom_targets:
+            for layout in layouts:
+                for spacing in spacing_values:
+                    coordinates = self._coordinates_for_layout(layout, atom_count, spacing)
+                    physics = summarize_register_physics(coordinates)
+                    if not physics.valid:
+                        continue
+                    feasibility = self._feasibility_score(atom_count, physics.min_distance_um, physics.blockade_pair_count)
+                    candidates.append(
+                        RegisterCandidate(
+                            campaign_id=campaign_id,
+                            spec_id=spec.id,
+                            label=f"{layout}-{atom_count}-s{spacing:.1f}",
+                            layout_type=layout,
+                            atom_count=atom_count,
+                            coordinates=coordinates,
+                            device_constraints={
+                                "min_spacing_um": 5.0,
+                                "max_atoms_assumed": 80,
+                            },
+                            min_distance_um=physics.min_distance_um,
+                            blockade_radius_um=physics.blockade_radius_um,
+                            blockade_pair_count=physics.blockade_pair_count,
+                            van_der_waals_matrix=physics.van_der_waals_matrix,
+                            feasibility_score=feasibility,
+                            reasoning_summary=(
+                                f"Proposed a {layout} layout with {atom_count} atoms and {spacing:.1f} um spacing. "
+                                f"Minimum spacing={physics.min_distance_um:.2f} um, blockade radius={physics.blockade_radius_um:.2f} um."
+                            ),
+                            pulser_register_summary=create_simple_register(coordinates),
+                            metadata={"spacing_um": spacing},
+                        )
+                    )
+                    if len(candidates) >= max_candidates:
+                        return candidates
         return candidates
 
     def _atom_targets(self, min_atoms: int, max_atoms: int) -> list[int]:
         midpoint = ceil((min_atoms + max_atoms) / 2)
         return list(dict.fromkeys([min_atoms, midpoint, max_atoms]))
 
-    def _coordinates_for_layout(self, layout: str, atom_count: int) -> list[tuple[float, float]]:
+    def _layout_order(self, preferred_layouts: list[str], memory_records: list[MemoryRecord]) -> list[str]:
+        remembered_layouts = [
+            str(record.signals.get("layout_type"))
+            for record in memory_records
+            if record.signals.get("layout_type")
+        ]
+        ordered = remembered_layouts + preferred_layouts
+        return list(dict.fromkeys(ordered))[:3]
+
+    def _spacing_values(self, memory_records: list[MemoryRecord]) -> list[float]:
+        remembered_spacings = [
+            float(record.signals["spacing_um"])
+            for record in memory_records
+            if "spacing_um" in record.signals
+        ]
+        baseline = [5.5, 7.0]
+        ordered = remembered_spacings + baseline
+        return list(dict.fromkeys(round(value, 2) for value in ordered))[:2]
+
+    def _feasibility_score(self, atom_count: int, min_distance_um: float, blockade_pair_count: int) -> float:
+        spacing_margin = min(min_distance_um / 5.0, 1.5)
+        blockade_bonus = min(blockade_pair_count / max(atom_count - 1, 1), 1.0)
+        atom_penalty = max(atom_count - 6, 0) * 0.04
+        return round(max(0.0, min(1.0, 0.55 + 0.20 * spacing_margin + 0.20 * blockade_bonus - atom_penalty)), 4)
+
+    def _coordinates_for_layout(self, layout: str, atom_count: int, spacing: float) -> list[tuple[float, float]]:
         if layout == "square":
             side = ceil(atom_count ** 0.5)
             coordinates: list[tuple[float, float]] = []
@@ -55,13 +97,12 @@ class GeometryAgent(BaseAgent):
                 for col in range(side):
                     if len(coordinates) == atom_count:
                         return coordinates
-                    coordinates.append((float(col) * 6.0, float(row) * 6.0))
+                    coordinates.append((float(col) * spacing, float(row) * spacing))
             return coordinates
 
         if layout == "triangular":
             coordinates = []
             row = 0
-            spacing = 5.5
             while len(coordinates) < atom_count:
                 for col in range(row + 1):
                     if len(coordinates) == atom_count:
@@ -72,8 +113,8 @@ class GeometryAgent(BaseAgent):
 
         if layout == "zigzag":
             return [
-                (float(index) * 5.5, 0.0 if index % 2 == 0 else 3.0)
+                (float(index) * spacing, 0.0 if index % 2 == 0 else spacing * 0.5)
                 for index in range(atom_count)
             ]
 
-        return [(float(index) * 5.5, 0.0) for index in range(atom_count)]
+        return [(float(index) * spacing, 0.0) for index in range(atom_count)]

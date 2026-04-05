@@ -143,3 +143,10 @@ class CryoSwarmRepository:
             MemoryRecord.model_validate({k: v for k, v in doc.items() if k != "_id"})
             for doc in cursor
         ]
+
+    def list_recent_memory(self, limit: int = 10) -> list[MemoryRecord]:
+        cursor = self.collections["memory"].find().sort("created_at", -1).limit(limit)
+        return [
+            MemoryRecord.model_validate({k: v for k, v in doc.items() if k != "_id"})
+            for doc in cursor
+        ]

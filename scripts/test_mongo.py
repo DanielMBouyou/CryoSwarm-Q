@@ -18,10 +18,9 @@ def main() -> int:
     if not settings.has_mongodb:
         raise RuntimeError("MONGODB_URI is not configured.")
 
-    initialize_database()
-    client = get_mongo_client(settings)
-
     try:
+        initialize_database()
+        client = get_mongo_client(settings)
         client.admin.command("ping")
         collection = get_database(settings)[settings.default_collection]
         result = collection.insert_one(
@@ -35,6 +34,9 @@ def main() -> int:
         print("MongoDB Atlas connection succeeded.")
         print(f"Inserted test document with _id={result.inserted_id}")
         return 0
+    except Exception as exc:
+        print(f"MongoDB Atlas connection failed: {exc}")
+        return 1
     finally:
         close_mongo_client()
 
