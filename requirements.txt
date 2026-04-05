@@ -1,0 +1,3 @@
+pymongo>=4.7
+dnspython>=2.6.1
+python-dotenv>=1.0

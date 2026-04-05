@@ -182,6 +182,25 @@ Optional supporting choices:
 - GitHub Pages for project-facing documentation,
 - Sentry for runtime monitoring.
 
+## MongoDB Atlas
+
+The repository is configured to support MongoDB Atlas through environment variables only. Credentials must stay in `.env` and must never be committed.
+
+Required variables:
+
+- `MONGODB_URI`
+- `MONGODB_DATABASE`
+- `MONGODB_COLLECTION`
+
+To test the connection and insert one document:
+
+```powershell
+py -m pip install -r requirements.txt
+py scripts/test_mongo.py
+```
+
+The script loads `.env`, pings the Atlas deployment, and inserts one test document into the configured collection.
+
 ## Why AMD MI300X Matters
 
 The AMD MI300X direction is relevant only if it accelerates the experimental search loop. The project should use GPU resources for parallel candidate evaluation, robustness sweeps, surrogate scoring, or branch-level search acceleration. It should not consume accelerator resources for superficial UI tasks.
