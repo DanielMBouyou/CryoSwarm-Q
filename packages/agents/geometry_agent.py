@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from math import ceil
 
+import numpy as np
+
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate
-import numpy as np
-
+from packages.core.parameter_space import PhysicsParameterSpace
 from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
 
 
 class GeometryAgent(BaseAgent):
     agent_name = AgentName.GEOMETRY
+
+    def __init__(self, param_space: PhysicsParameterSpace | None = None) -> None:
+        super().__init__()
+        self.param_space = param_space or PhysicsParameterSpace.default()
 
     def run(
         self,
@@ -42,7 +47,7 @@ class GeometryAgent(BaseAgent):
                             atom_count=atom_count,
                             coordinates=coordinates,
                             device_constraints={
-                                "min_spacing_um": 5.0,
+                                "min_spacing_um": self.param_space.geometry.min_spacing_um.default,
                                 "max_atoms_assumed": 80,
                             },
                             min_distance_um=physics.min_distance_um,
@@ -64,7 +69,10 @@ class GeometryAgent(BaseAgent):
 
     def _atom_targets(self, min_atoms: int, max_atoms: int) -> list[int]:
         midpoint = ceil((min_atoms + max_atoms) / 2)
-        return list(dict.fromkeys([min_atoms, midpoint, max_atoms]))
+        min_bound = int(self.param_space.geometry.atom_count.min_val)
+        max_bound = int(self.param_space.geometry.atom_count.max_val)
+        targets = [min_atoms, midpoint, max_atoms]
+        return list(dict.fromkeys([min(max(target, min_bound), max_bound) for target in targets]))
 
     def _layout_order(self, preferred_layouts: list[str], memory_records: list[MemoryRecord]) -> list[str]:
         remembered_layouts = [
@@ -78,11 +86,14 @@ class GeometryAgent(BaseAgent):
     def _spacing_values(self, memory_records: list[MemoryRecord]) -> list[float]:
         remembered_spacings = []
         avoided_spacings = set()
+        spacing_range = self.param_space.geometry.spacing_um
+        min_spacing = self.param_space.geometry.min_spacing_um.default
+        delta = 0.5
         for record in memory_records:
             spacing = record.signals.get("spacing_um")
             if spacing is None:
                 continue
-            spacing_value = round(float(spacing), 2)
+            spacing_value = round(spacing_range.clip(float(spacing)), 2)
             confidence = float(record.signals.get("confidence", 0.0))
             if record.lesson_type == "failure_pattern" and "high_noise_sensitivity" in record.reusable_tags:
                 avoided_spacings.add(spacing_value)
@@ -91,28 +102,34 @@ class GeometryAgent(BaseAgent):
             if confidence > 0.7:
                 remembered_spacings.extend(
                     [
-                        round(max(5.0, spacing_value - 0.5), 2),
-                        round(spacing_value + 0.5, 2),
+                        round(max(min_spacing, spacing_value - delta), 2),
+                        round(spacing_range.clip(spacing_value + delta), 2),
                     ]
                 )
-        baseline = [7.0, 8.5]
-        ordered = remembered_spacings + baseline
-        unique = [
-            round(value, 2)
-            for value in ordered
-            if round(value, 2) not in avoided_spacings
+        baseline = [
+            round(spacing_range.default, 2),
+            round(spacing_range.clip(spacing_range.default + 1.5), 2),
         ]
+        ordered = remembered_spacings + baseline
+        unique = [round(value, 2) for value in ordered if round(value, 2) not in avoided_spacings]
         return list(dict.fromkeys(unique))[:4]
 
     def _feasibility_score(self, atom_count: int, min_distance_um: float, blockade_pair_count: int) -> float:
-        spacing_margin = min(min_distance_um / 5.0, 1.5)
+        geometry = self.param_space.geometry
+        spacing_margin = min(min_distance_um / max(geometry.min_spacing_um.default, 1e-6), 1.5)
         blockade_bonus = min(blockade_pair_count / max(atom_count - 1, 1), 1.0)
-        atom_penalty = max(atom_count - 6, 0) * 0.04
-        return round(max(0.0, min(1.0, 0.55 + 0.20 * spacing_margin + 0.20 * blockade_bonus - atom_penalty)), 4)
+        atom_penalty = max(atom_count - int(geometry.atom_count.default), 0) * geometry.feasibility_atom_penalty.default
+        score = (
+            geometry.feasibility_base.default
+            + geometry.feasibility_spacing_weight.default * spacing_margin
+            + geometry.feasibility_blockade_weight.default * blockade_bonus
+            - atom_penalty
+        )
+        return round(max(0.0, min(1.0, score)), 4)
 
     def _coordinates_for_layout(self, layout: str, atom_count: int, spacing: float) -> list[tuple[float, float]]:
         if layout == "square":
-            side = ceil(atom_count ** 0.5)
+            side = ceil(atom_count**0.5)
             coordinates: list[tuple[float, float]] = []
             for row in range(side):
                 for col in range(side):
@@ -141,6 +158,7 @@ class GeometryAgent(BaseAgent):
         if layout == "ring":
             radius = spacing / (2.0 * np.sin(np.pi / max(atom_count, 2)))
             import math
+
             return [
                 (
                     round(radius * math.cos(2 * math.pi * k / atom_count), 6),

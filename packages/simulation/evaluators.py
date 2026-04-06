@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from packages.core.logging import get_logger
+from packages.core.parameter_space import PhysicsParameterSpace
 from packages.core.models import ExperimentSpec, NoiseScenario, RegisterCandidate, SequenceCandidate
 from packages.pasqal_adapters.pulser_adapter import build_sequence_from_candidate, PULSER_AVAILABLE
 
@@ -116,6 +117,7 @@ def _extract_observables(
     results: Any,
     spec: ExperimentSpec,
     register_candidate: RegisterCandidate,
+    param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, float]]:
     labels = _rydberg_labels(register_candidate.atom_count)
     single_site_ops = [emulator.build_operator([("sigma_rr", [label])]) for label in labels]
@@ -143,7 +145,12 @@ def _extract_observables(
     interaction_energy_norm = interaction_energy / max_interaction if max_interaction else 0.0
     density_score = _target_density_score(spec.target_density, rydberg_density)
     blockade_score = _blockade_score(blockade_violation)
-    observable_score = round(0.7 * density_score + 0.3 * blockade_score, 4)
+    scoring = (param_space or PhysicsParameterSpace.default()).scoring
+    observable_score = round(
+        scoring.density_score_weight.default * density_score
+        + scoring.blockade_score_weight.default * blockade_score,
+        4,
+    )
 
     sampled = Counter(results.results[-1]) if hasattr(results, "results") else results.sample_final_state()
 
@@ -197,6 +204,7 @@ def simulate_sequence_candidate(
     register_candidate: RegisterCandidate,
     sequence_candidate: SequenceCandidate,
     noise_scenario: NoiseScenario | None = None,
+    param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
     if register_candidate.atom_count > 14:
         logger.warning(
@@ -218,6 +226,7 @@ def simulate_sequence_candidate(
         results,
         spec,
         register_candidate,
+        param_space,
     )
 
     hamiltonian_metrics = _compute_hamiltonian_metrics(register_candidate, sequence_candidate)
@@ -231,14 +240,16 @@ def evaluate_candidate_robustness(
     register_candidate: RegisterCandidate,
     sequence_candidate: SequenceCandidate,
     scenarios: list[NoiseScenario] | None = None,
+    param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, float], float, float, float, float, float, dict[str, Any], dict[str, Any], dict[str, Any]]:
     nominal_score, nominal_observables, hamiltonian_metrics = simulate_sequence_candidate(
         spec,
         register_candidate,
         sequence_candidate,
         noise_scenario=None,
+        param_space=param_space,
     )
-    active_scenarios = scenarios or default_noise_scenarios()
+    active_scenarios = scenarios or default_noise_scenarios(param_space)
     scenario_scores: dict[str, float] = {}
     scenario_observables: dict[str, Any] = {}
     perturbed_scores: list[float] = []
@@ -249,6 +260,7 @@ def evaluate_candidate_robustness(
             register_candidate,
             sequence_candidate,
             noise_scenario=scenario,
+            param_space=param_space,
         )
         scenario_scores[scenario.label.value] = score
         scenario_observables[scenario.label.value] = observables
@@ -258,7 +270,13 @@ def evaluate_candidate_robustness(
     worst_score = worst_case_score(perturbed_scores)
     std_score = perturbation_std(perturbed_scores)
     penalty = robustness_penalty(nominal_score, worst_score, std_score)
-    aggregate = robustness_score(nominal_score, average_score, worst_score, std_score)
+    aggregate = robustness_score(
+        nominal_score,
+        average_score,
+        worst_score,
+        std_score,
+        param_space=param_space,
+    )
     return (
         nominal_score,
         scenario_scores,
@@ -301,6 +319,14 @@ def _simulate_with_numpy_fallback(
         omega_max *= 1.0 + rng.normal(0.0, noise_scenario.amplitude_jitter)
         delta_start += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_start) + 0.1)
         delta_end += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_end) + 0.1)
+        spatial_inhom = float(noise_scenario.metadata.get("spatial_inhomogeneity", 0.0))
+        spatial_factors = np.ones(register_candidate.atom_count, dtype=np.float64)
+        if spatial_inhom > 0.0:
+            spatial_factors = 1.0 + rng.normal(0.0, spatial_inhom, size=register_candidate.atom_count)
+            omega_max *= float(np.mean(spatial_factors))
+    else:
+        spatial_inhom = 0.0
+        spatial_factors = np.ones(register_candidate.atom_count, dtype=np.float64)
 
     result = simulate_rydberg_evolution(
         coords=register_candidate.coordinates,
@@ -335,6 +361,8 @@ def _simulate_with_numpy_fallback(
             round(float(result["connected_correlations"][i][j]), 6)
             for i in range(n) for j in range(i + 1, n)
         ],
+        "spatial_inhomogeneity": round(spatial_inhom, 6),
+        "spatial_drive_factors": [round(float(value), 6) for value in spatial_factors],
         "hamiltonian_metrics": hamiltonian_metrics,
         "noise_label": noise_scenario.label.value if noise_scenario else "noiseless",
         "backend": "numpy_exact",
@@ -346,6 +374,8 @@ def _simulate_with_numpy_fallback(
         "interaction_energy_norm": 0.0,
         "entanglement_entropy": round(result["entanglement_entropy"], 6),
         "antiferromagnetic_order": round(result["antiferromagnetic_order"], 6),
+        "spatial_inhomogeneity": round(spatial_inhom, 6),
+        "spatial_drive_std": round(float(np.std(spatial_factors)), 6),
         **hamiltonian_metrics,
     }
     return observable_score, observables, summary

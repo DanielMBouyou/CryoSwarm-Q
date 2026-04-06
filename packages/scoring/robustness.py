@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from statistics import mean, pstdev
 
+from packages.core.parameter_space import PhysicsParameterSpace
+
 
 def clamp_score(value: float) -> float:
     """Project a raw scalar score into the normalized [0, 1] interval."""
@@ -39,7 +41,13 @@ def robustness_penalty(nominal: float, worst_case: float, std: float) -> float:
     return clamp_score(max((nominal - worst_case) + std, 0.0))
 
 
-def robustness_score(nominal: float, perturbed_average: float, worst_case: float, std: float) -> float:
+def robustness_score(
+    nominal: float,
+    perturbed_average: float,
+    worst_case: float,
+    std: float,
+    param_space: PhysicsParameterSpace | None = None,
+) -> float:
     """Aggregate nominal, average, worst-case, and stability terms into one score.
 
     The weights are intentionally conservative:
@@ -48,6 +56,12 @@ def robustness_score(nominal: float, perturbed_average: float, worst_case: float
     - 0.30 worst-case behavior
     - 0.10 stability bonus from low variance
     """
-    stability_bonus = max(0.0, 1.0 - min(std / 0.2, 1.0))
-    aggregate = 0.25 * nominal + 0.35 * perturbed_average + 0.30 * worst_case + 0.10 * stability_bonus
+    scoring = (param_space or PhysicsParameterSpace.default()).scoring
+    stability_bonus = max(0.0, 1.0 - min(std / scoring.stability_std_threshold.default, 1.0))
+    aggregate = (
+        scoring.nominal_weight.default * nominal
+        + scoring.average_weight.default * perturbed_average
+        + scoring.worst_case_weight.default * worst_case
+        + scoring.stability_weight.default * stability_bonus
+    )
     return clamp_score(aggregate)

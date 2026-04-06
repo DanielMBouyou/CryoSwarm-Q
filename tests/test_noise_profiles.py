@@ -44,3 +44,8 @@ class TestNoiseProfiles:
     def test_labels_unique(self) -> None:
         labels = [s.label for s in default_noise_scenarios()]
         assert len(set(labels)) == 3
+
+    def test_spatial_inhomogeneity_present(self) -> None:
+        scenarios = default_noise_scenarios()
+        values = [float(s.metadata.get("spatial_inhomogeneity", 0.0)) for s in scenarios]
+        assert values == [0.02, 0.05, 0.08]

@@ -15,6 +15,7 @@ from packages.agents.problem_agent import ProblemFramingAgent
 from packages.agents.results_agent import ResultsAgent
 from packages.agents.routing_agent import BackendRoutingAgent
 from packages.agents.sequence_agent import SequenceAgent
+from packages.agents.sequence_strategy import SequenceStrategy, SequenceStrategyMode
 from packages.core.enums import CampaignStatus, DecisionType, GoalStatus
 from packages.core.logging import get_logger
 from packages.core.models import (
@@ -29,6 +30,7 @@ from packages.core.models import (
     RobustnessReport,
     SequenceCandidate,
 )
+from packages.core.parameter_space import PhysicsParameterSpace
 from packages.db.repositories import CryoSwarmRepository
 from packages.scoring.objective import compute_objective_score
 
@@ -47,18 +49,32 @@ def _evaluate_noise_task(
 class CryoSwarmPipeline:
     """Run the deterministic CryoSwarm-Q orchestration stages end to end."""
 
-    def __init__(self, repository: CryoSwarmRepository | None = None, parallel: bool = False) -> None:
+    def __init__(
+        self,
+        repository: CryoSwarmRepository | None = None,
+        parallel: bool = False,
+        sequence_strategy_mode: str = "adaptive",
+        rl_checkpoint_path: str | None = None,
+        param_space: PhysicsParameterSpace | None = None,
+    ) -> None:
         self.repository = repository
         self.parallel = parallel
+        self.param_space = param_space or PhysicsParameterSpace.default()
         self.logger = get_logger(__name__)
         self.problem_agent = ProblemFramingAgent()
-        self.geometry_agent = GeometryAgent()
-        self.sequence_agent = SequenceAgent()
-        self.noise_agent = NoiseRobustnessAgent()
+        self.geometry_agent = GeometryAgent(param_space=self.param_space)
+        self.sequence_agent = SequenceAgent(param_space=self.param_space)
+        self.noise_agent = NoiseRobustnessAgent(param_space=self.param_space)
         self.routing_agent = BackendRoutingAgent()
         self.campaign_agent = CampaignAgent()
         self.results_agent = ResultsAgent()
         self.memory_agent = MemoryAgent()
+        self.sequence_strategy = SequenceStrategy(
+            mode=SequenceStrategyMode(sequence_strategy_mode),
+            param_space=self.param_space,
+            rl_checkpoint_path=rl_checkpoint_path,
+            heuristic_agent=self.sequence_agent,
+        )
 
     def _safe_repository_call(
         self,
@@ -153,6 +169,8 @@ class CryoSwarmPipeline:
         reports: list[RobustnessReport],
         memory_records: list[MemoryRecord],
         backend_mix: dict[str, int],
+        registers: list[RegisterCandidate],
+        sequences: list[SequenceCandidate],
         error: str | None = None,
     ) -> PipelineSummary:
         return PipelineSummary(
@@ -170,6 +188,8 @@ class CryoSwarmPipeline:
             decisions=decisions,
             robustness_reports=reports,
             memory_records=memory_records,
+            registers=registers,
+            sequences=sequences,
         )
 
     def _evaluate_sequences(
@@ -431,6 +451,8 @@ class CryoSwarmPipeline:
                     reports=reports,
                     memory_records=memory_records,
                     backend_mix=dict(backend_counter),
+                    registers=registers,
+                    sequences=all_sequences,
                     error="Problem framing failed.",
                 )
 
@@ -488,13 +510,43 @@ class CryoSwarmPipeline:
                     reports=reports,
                     memory_records=memory_records,
                     backend_mix=dict(backend_counter),
+                    registers=registers,
+                    sequences=all_sequences,
                     error="No feasible register candidates generated.",
                 )
 
             for register_candidate in registers:
                 try:
-                    generated = self.sequence_agent.run(spec, register_candidate, campaign.id, memory_context)
+                    generated, strategy_meta = self.sequence_strategy.generate_candidates(
+                        spec,
+                        register_candidate,
+                        campaign.id,
+                        memory_context,
+                    )
+                    for sequence in generated:
+                        sequence.metadata.setdefault("problem_class", strategy_meta["problem_class"])
+                        sequence.metadata.setdefault("strategy_used", strategy_meta["strategy_used"])
                     all_sequences.extend(generated)
+                    decisions.append(
+                        self.sequence_agent.build_decision(
+                            campaign_id=campaign.id,
+                            subject_id=register_candidate.id,
+                            decision_type=DecisionType.CANDIDATE_GENERATION,
+                            status="completed" if generated else "empty",
+                            reasoning_summary=(
+                                f"Generated {len(generated)} sequence candidates for {register_candidate.label} "
+                                f"using {strategy_meta['strategy_used']}."
+                            ),
+                            structured_output={
+                                "register_candidate_id": register_candidate.id,
+                                "sequence_candidate_ids": [item.id for item in generated],
+                                "strategy_used": strategy_meta["strategy_used"],
+                                "strategy_reason": strategy_meta["strategy_reason"],
+                                "rl_candidates": strategy_meta.get("rl_candidates_count", 0),
+                                "heuristic_candidates": strategy_meta.get("heuristic_candidates_count", 0),
+                            },
+                        )
+                    )
                 except Exception as exc:
                     self._record_agent_failure(
                         decisions,
@@ -512,7 +564,10 @@ class CryoSwarmPipeline:
                     decision_type=DecisionType.CANDIDATE_GENERATION,
                     status="completed" if all_sequences else "empty",
                     reasoning_summary=f"Generated {len(all_sequences)} sequence candidates.",
-                    structured_output={"sequence_candidate_ids": [item.id for item in all_sequences]},
+                    structured_output={
+                        "sequence_candidate_ids": [item.id for item in all_sequences],
+                        "strategy_report": self.sequence_strategy.get_strategy_report(),
+                    },
                 )
             )
 
@@ -547,6 +602,8 @@ class CryoSwarmPipeline:
                     reports=reports,
                     memory_records=memory_records,
                     backend_mix=dict(backend_counter),
+                    registers=registers,
+                    sequences=all_sequences,
                     error="No sequence candidates generated.",
                 )
 
@@ -559,6 +616,19 @@ class CryoSwarmPipeline:
                 decisions,
             )
             backend_counter = Counter(backend_mix)
+            sequence_lookup = {item.id: item for item in all_sequences}
+            report_groups: dict[tuple[str, str], list[float]] = {}
+            for report in reports:
+                sequence = sequence_lookup.get(report.sequence_candidate_id)
+                if sequence is None:
+                    continue
+                key = (
+                    str(sequence.metadata.get("problem_class", "unknown_problem_class")),
+                    str(sequence.metadata.get("strategy_used", SequenceStrategyMode.HEURISTIC_ONLY.value)),
+                )
+                report_groups.setdefault(key, []).append(report.robustness_score)
+            for (problem_class, strategy_used), scores in report_groups.items():
+                self.sequence_strategy.update_performance(problem_class, strategy_used, scores)
 
             if not ranked_candidates:
                 self.logger.warning("No evaluation results were produced for campaign %s.", campaign.id)
@@ -591,6 +661,8 @@ class CryoSwarmPipeline:
                     reports=reports,
                     memory_records=memory_records,
                     backend_mix=dict(backend_counter),
+                    registers=registers,
+                    sequences=all_sequences,
                     error="No evaluation results were produced.",
                 )
 
@@ -722,6 +794,8 @@ class CryoSwarmPipeline:
                 reports=reports,
                 memory_records=memory_records,
                 backend_mix=dict(backend_counter),
+                registers=registers,
+                sequences=all_sequences,
                 error=campaign.summary if campaign.status == CampaignStatus.FAILED else None,
             )
         except Exception as exc:
@@ -754,5 +828,7 @@ class CryoSwarmPipeline:
                 reports=reports,
                 memory_records=memory_records,
                 backend_mix=dict(backend_counter),
+                registers=registers,
+                sequences=all_sequences,
                 error=str(exc),
             )

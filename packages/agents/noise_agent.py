@@ -3,11 +3,16 @@ from __future__ import annotations
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
 from packages.core.models import ExperimentSpec, RegisterCandidate, RobustnessReport, SequenceCandidate
+from packages.core.parameter_space import PhysicsParameterSpace
 from packages.simulation.evaluators import evaluate_candidate_robustness
 
 
 class NoiseRobustnessAgent(BaseAgent):
     agent_name = AgentName.NOISE
+
+    def __init__(self, param_space: PhysicsParameterSpace | None = None) -> None:
+        super().__init__()
+        self.param_space = param_space or PhysicsParameterSpace.default()
 
     def run(
         self,
@@ -29,7 +34,8 @@ class NoiseRobustnessAgent(BaseAgent):
         ) = evaluate_candidate_robustness(
             spec,
             register_candidate,
-            sequence_candidate
+            sequence_candidate,
+            param_space=self.param_space,
         )
         return RobustnessReport(
             campaign_id=sequence_candidate.campaign_id,
