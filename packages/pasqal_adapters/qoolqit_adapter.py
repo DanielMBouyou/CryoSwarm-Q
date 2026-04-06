@@ -8,7 +8,7 @@ try:
 
     QOOLQIT_AVAILABLE = True
     QOOLQIT_IMPORT_ERROR: str | None = None
-except Exception as exc:  # pragma: no cover - optional dependency
+except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - optional dependency
     qoolqit = None
     QOOLQIT_AVAILABLE = False
     QOOLQIT_IMPORT_ERROR = str(exc)

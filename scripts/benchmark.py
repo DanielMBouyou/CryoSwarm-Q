@@ -150,7 +150,7 @@ def _load_surrogate_predictor(model_path: Path):
 
     import torch
 
-    checkpoint = torch.load(str(model_path), map_location="cpu", weights_only=False)
+    checkpoint = torch.load(str(model_path), map_location="cpu", weights_only=True)
     version = checkpoint.get("version") if isinstance(checkpoint, dict) else None
     config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
     if version == "v2":

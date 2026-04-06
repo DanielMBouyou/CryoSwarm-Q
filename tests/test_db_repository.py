@@ -17,10 +17,13 @@ from packages.core.models import (
 from packages.db.repositories import CryoSwarmRepository
 
 
-pytestmark = pytest.mark.skipif(
-    not get_settings().has_mongodb,
-    reason="MONGODB_URI is not configured.",
-)
+pytestmark = [
+    pytest.mark.mongo,
+    pytest.mark.skipif(
+        not get_settings().has_mongodb,
+        reason="MONGODB_URI is not configured.",
+    ),
+]
 
 
 def _get_repository_or_skip() -> CryoSwarmRepository:

@@ -10,7 +10,7 @@ try:
     from pasqal_cloud.authentication import TokenProvider
 
     PASQAL_CLOUD_AVAILABLE = True
-except Exception as exc:  # pragma: no cover - optional dependency
+except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - optional dependency
     SDK = None  # type: ignore[assignment]
     BatchStatus = None  # type: ignore[assignment]
     TokenProvider = object  # type: ignore[assignment]

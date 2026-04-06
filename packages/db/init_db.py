@@ -5,9 +5,14 @@ from packages.db.mongodb import COLLECTION_NAMES, get_database
 
 
 logger = get_logger(__name__)
+_INITIALIZED = False
 
 
 def initialize_database() -> None:
+    global _INITIALIZED
+    if _INITIALIZED:
+        return
+
     database = get_database()
     existing = set(database.list_collection_names())
     for collection_name in COLLECTION_NAMES:
@@ -18,7 +23,14 @@ def initialize_database() -> None:
         collection.create_index("created_at")
         collection.create_index("campaign_id")
         collection.create_index("goal_id")
+    _INITIALIZED = True
     logger.info("MongoDB collections initialized.")
+
+
+def reset_initialization_flag() -> None:
+    """Reset database initialization state for test isolation."""
+    global _INITIALIZED
+    _INITIALIZED = False
 
 
 if __name__ == "__main__":

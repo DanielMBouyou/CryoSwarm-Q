@@ -16,13 +16,14 @@ from numpy.typing import NDArray
 
 from packages.agents.geometry_agent import GeometryAgent
 from packages.core.enums import NoiseLevel, SequenceFamily
+from packages.core.logging import get_logger
 from packages.core.models import ExperimentSpec, NoiseScenario, RegisterCandidate, SequenceCandidate
 from packages.core.parameter_space import PhysicsParameterSpace
 from packages.ml.dataset import OUTPUT_DIM, INPUT_DIM_V2, build_feature_vector_v2
 from packages.ml.normalizer import DatasetNormalizer
+from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
 from packages.scoring.robustness import clamp_score, robustness_score
 from packages.simulation.evaluators import evaluate_candidate_robustness
-from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
 
 try:
     from scipy.stats.qmc import LatinHypercube, Sobol
@@ -32,6 +33,9 @@ except ImportError:  # pragma: no cover - optional fallback
     LatinHypercube = None  # type: ignore[assignment]
     Sobol = None  # type: ignore[assignment]
     SCIPY_QMC_AVAILABLE = False
+
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -150,7 +154,7 @@ def _fast_target_estimate(
 ) -> tuple[float, float, float, float]:
     spacing = float(register.metadata.get("spacing_um", param_space.geometry.spacing_um.default))
     blockade_fraction = register.blockade_pair_count / max(register.atom_count * (register.atom_count - 1) / 2, 1)
-    interaction_energy = 862690.0 / max(spacing**6, 1e-6)
+    interaction_energy = param_space.c6_coefficient / max(spacing**6, 1e-6)
     omega_ratio = sequence.amplitude / max(interaction_energy, 1e-6)
     density_proxy = clamp_score(0.55 * blockade_fraction + 0.45 * min(omega_ratio, 1.0))
     nominal = density_proxy
@@ -204,7 +208,8 @@ def _evaluate_sample_task(
             "family": sequence.sequence_family.value,
         }
         return features, targets, metadata
-    except Exception:
+    except Exception as exc:
+        logger.debug("Sample generation failed: %s", exc)
         return None
 
 
@@ -410,7 +415,7 @@ class DatasetGenerator:
                 for j in range(i + 1, len(coordinates))
             ]
             min_distance = min(distances) if distances else 0.0
-            blockade_radius = (862690.0 / 5.0) ** (1.0 / 6.0) if min_distance else 0.0
+            blockade_radius = (self.param_space.c6_coefficient / 5.0) ** (1.0 / 6.0) if min_distance else 0.0
             blockade_pairs = sum(1 for value in distances if value <= blockade_radius)
             physics = type(
                 "FallbackPhysics",
@@ -421,7 +426,13 @@ class DatasetGenerator:
                     "blockade_pair_count": blockade_pairs,
                     "van_der_waals_matrix": [
                         [
-                            0.0 if i == j else round(862690.0 / max(dist(coordinates[i], coordinates[j]) ** 6, 1e-6), 6)
+                            0.0
+                            if i == j
+                            else round(
+                                self.param_space.c6_coefficient
+                                / max(dist(coordinates[i], coordinates[j]) ** 6, 1e-6),
+                                6,
+                            )
                             for j in range(len(coordinates))
                         ]
                         for i in range(len(coordinates))
@@ -497,7 +508,8 @@ class DatasetGenerator:
             for future in as_completed(futures):
                 try:
                     results.append(future.result(timeout=self.config.timeout_per_eval))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Parallel evaluation worker failed: %s", exc)
                     results.append(None)
         return results
 

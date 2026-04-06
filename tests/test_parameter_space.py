@@ -46,6 +46,12 @@ def test_default_parameter_space_contains_all_families() -> None:
     assert set(param_space.pulse) == set(SequenceFamily)
     assert param_space.geometry.min_spacing_um.default == 5.0
     assert param_space.scoring.nominal_weight.default == 0.25
+    assert param_space.c6_coefficient == 862690.0
+    assert param_space.max_atoms_dense == 12
+    assert param_space.max_atoms_sparse == 18
+    assert param_space.max_atoms_gpu == 24
+    assert param_space.max_atoms_evaluator_parallel == 14
+    assert param_space.amplitude_safety_margin == 0.85
 
 
 def test_grid_search_configs_respects_family_space() -> None:
@@ -85,6 +91,8 @@ def test_parameter_space_json_yaml_roundtrip(tmp_path) -> None:
 
     assert restored.geometry.spacing_um.default == param_space.geometry.spacing_um.default
     assert restored.pulse[SequenceFamily.BLACKMAN_SWEEP].amplitude.default == 7.0
+    assert restored.c6_coefficient == param_space.c6_coefficient
+    assert restored.max_atoms_gpu == param_space.max_atoms_gpu
 
 
 def test_sample_noise_scenario_is_bounded() -> None:
@@ -94,3 +102,15 @@ def test_sample_noise_scenario_is_bounded() -> None:
 
     assert param_space.noise.amplitude_jitter.min_val <= scenario.amplitude_jitter <= param_space.noise.amplitude_jitter.max_val
     assert param_space.noise.false_negative_rate.min_val <= scenario.false_negative_rate <= param_space.noise.false_negative_rate.max_val
+
+
+def test_atom_limits_are_consistent() -> None:
+    param_space = PhysicsParameterSpace.default()
+
+    assert param_space.max_atoms_dense < param_space.max_atoms_sparse
+    assert param_space.max_atoms_sparse <= param_space.max_atoms_gpu
+    assert (
+        param_space.max_atoms_dense
+        <= param_space.max_atoms_evaluator_parallel
+        <= param_space.max_atoms_sparse
+    )

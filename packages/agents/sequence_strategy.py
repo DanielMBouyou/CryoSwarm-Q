@@ -7,8 +7,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from packages.agents.protocols import SequenceProtocol
 from packages.agents.sequence_agent import SequenceAgent
 from packages.core.enums import SequenceFamily
+from packages.core.logging import get_logger
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate, SequenceCandidate
 from packages.core.parameter_space import PhysicsParameterSpace
 from packages.ml.rl_sequence_agent import RLSequenceAgent
@@ -63,7 +65,7 @@ class SequenceStrategy:
         min_rl_confidence: float = 0.4,
         hybrid_rl_fraction: float = 0.5,
         surrogate_model: SurrogateModel | None = None,
-        heuristic_agent: SequenceAgent | None = None,
+        heuristic_agent: SequenceProtocol | None = None,
         rl_agent: RLSequenceAgent | None = None,
     ) -> None:
         self.mode = mode
@@ -73,7 +75,7 @@ class SequenceStrategy:
         self.min_rl_confidence = min_rl_confidence
         self.hybrid_rl_fraction = hybrid_rl_fraction
         self.surrogate_model = surrogate_model
-        self.heuristic_agent = heuristic_agent or SequenceAgent(param_space=self.param_space)
+        self.heuristic_agent: SequenceProtocol = heuristic_agent or SequenceAgent(param_space=self.param_space)
         self.rl_agent = rl_agent or RLSequenceAgent(
             param_space=self.param_space,
             checkpoint_path=rl_checkpoint_path,
@@ -83,6 +85,22 @@ class SequenceStrategy:
             heuristic_agent=self.heuristic_agent,
         )
         self.metrics: dict[tuple[str, str], StrategyMetrics] = {}
+        self.logger = get_logger(__name__)
+
+    @staticmethod
+    def _with_metadata_defaults(
+        candidate: SequenceCandidate,
+        **defaults: Any,
+    ) -> SequenceCandidate:
+        metadata = dict(candidate.metadata)
+        changed = False
+        for key, value in defaults.items():
+            if key not in metadata:
+                metadata[key] = value
+                changed = True
+        if not changed:
+            return candidate
+        return candidate.model_copy(update={"metadata": metadata})
 
     def select_strategy(
         self,
@@ -156,10 +174,14 @@ class SequenceStrategy:
             strategy_used = SequenceStrategyMode.HEURISTIC_ONLY
 
         candidates = heuristic_candidates + rl_candidates
-        for candidate in heuristic_candidates:
-            candidate.metadata.setdefault("source", "heuristic")
-        for candidate in rl_candidates:
-            candidate.metadata.setdefault("source", "rl_policy")
+        heuristic_candidates = [
+            self._with_metadata_defaults(candidate, source="heuristic")
+            for candidate in heuristic_candidates
+        ]
+        rl_candidates = [
+            self._with_metadata_defaults(candidate, source="rl_policy")
+            for candidate in rl_candidates
+        ]
 
         if strategy_used == SequenceStrategyMode.HYBRID and self.hybrid_rl_fraction < 1.0:
             target_rl = max(1, int(round(len(candidates) * self.hybrid_rl_fraction))) if rl_candidates else 0
@@ -211,7 +233,12 @@ class SequenceStrategy:
                 payload = json.loads(sidecar.read_text(encoding="utf-8"))
                 if isinstance(payload, dict):
                     return float(payload.get("validation_score", payload.get("quality", 0.75)))
-            except Exception:
+            except Exception as exc:
+                self.logger.debug(
+                    "Checkpoint sidecar %s could not be parsed: %s",
+                    sidecar,
+                    exc,
+                )
                 return 0.75
         return 0.75
 

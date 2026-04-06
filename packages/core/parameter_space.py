@@ -303,6 +303,26 @@ class PhysicsParameterSpace:
     duration_offset_per_atom: ParameterRange
     cost_base_exponent: ParameterRange
     cost_normalization: ParameterRange
+    c6_coefficient: float = 862690.0
+    """C6 van der Waals coefficient for 87-Rb |70S_{1/2}> in rad*um^6/us."""
+
+    default_blockade_radius_um: float = 9.5
+    """Default Rydberg blockade radius in micrometers for standard benchmark layouts."""
+
+    max_atoms_dense: int = 12
+    """Maximum atom count for dense exact diagonalization of the full Hamiltonian."""
+
+    max_atoms_sparse: int = 18
+    """Maximum atom count for sparse CPU Hamiltonian methods."""
+
+    max_atoms_gpu: int = 24
+    """Maximum atom count supported by the GPU simulation backend."""
+
+    max_atoms_evaluator_parallel: int = 14
+    """Atom-count threshold where evaluators switch away from dense exact methods."""
+
+    amplitude_safety_margin: float = 0.85
+    """Fraction of hardware amplitude and detuning limits retained as a safety margin."""
 
     def __post_init__(self) -> None:
         self.validate()
@@ -390,6 +410,13 @@ class PhysicsParameterSpace:
             duration_offset_per_atom=ParameterRange("duration_offset_per_atom", 50.0, 300.0, 150.0, "ns/atom", "Sequence duration offset per atom."),
             cost_base_exponent=ParameterRange("cost_base_exponent", 1.6, 2.0, 2.0, "-", "Exponential cost base per atom."),
             cost_normalization=ParameterRange("cost_normalization", 100000.0, 1000000.0, 500000.0, "-", "Cost normalization factor."),
+            c6_coefficient=862690.0,
+            default_blockade_radius_um=9.5,
+            max_atoms_dense=12,
+            max_atoms_sparse=18,
+            max_atoms_gpu=24,
+            max_atoms_evaluator_parallel=14,
+            amplitude_safety_margin=0.85,
         )
 
     @classmethod
@@ -407,6 +434,7 @@ class PhysicsParameterSpace:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PhysicsParameterSpace":
+        defaults = cls.default()
         pulse = {
             SequenceFamily(str(family_key)): PulseParameterSpace.from_dict(family_payload)
             for family_key, family_payload in payload["pulse"].items()
@@ -419,6 +447,19 @@ class PhysicsParameterSpace:
             duration_offset_per_atom=ParameterRange.from_dict(payload["duration_offset_per_atom"]),
             cost_base_exponent=ParameterRange.from_dict(payload["cost_base_exponent"]),
             cost_normalization=ParameterRange.from_dict(payload["cost_normalization"]),
+            c6_coefficient=float(payload.get("c6_coefficient", defaults.c6_coefficient)),
+            default_blockade_radius_um=float(
+                payload.get("default_blockade_radius_um", defaults.default_blockade_radius_um)
+            ),
+            max_atoms_dense=int(payload.get("max_atoms_dense", defaults.max_atoms_dense)),
+            max_atoms_sparse=int(payload.get("max_atoms_sparse", defaults.max_atoms_sparse)),
+            max_atoms_gpu=int(payload.get("max_atoms_gpu", defaults.max_atoms_gpu)),
+            max_atoms_evaluator_parallel=int(
+                payload.get("max_atoms_evaluator_parallel", defaults.max_atoms_evaluator_parallel)
+            ),
+            amplitude_safety_margin=float(
+                payload.get("amplitude_safety_margin", defaults.amplitude_safety_margin)
+            ),
         )
 
     def to_yaml(self, path: str) -> None:
@@ -433,6 +474,13 @@ class PhysicsParameterSpace:
             "duration_offset_per_atom": self.duration_offset_per_atom.to_dict(),
             "cost_base_exponent": self.cost_base_exponent.to_dict(),
             "cost_normalization": self.cost_normalization.to_dict(),
+            "c6_coefficient": self.c6_coefficient,
+            "default_blockade_radius_um": self.default_blockade_radius_um,
+            "max_atoms_dense": self.max_atoms_dense,
+            "max_atoms_sparse": self.max_atoms_sparse,
+            "max_atoms_gpu": self.max_atoms_gpu,
+            "max_atoms_evaluator_parallel": self.max_atoms_evaluator_parallel,
+            "amplitude_safety_margin": self.amplitude_safety_margin,
         }
 
     def validate(self) -> None:
@@ -461,6 +509,27 @@ class PhysicsParameterSpace:
 
         if self.geometry.min_spacing_um.default > self.geometry.spacing_um.max_val:
             raise ValueError("Default minimum spacing cannot exceed maximum nominal spacing.")
+
+        if self.c6_coefficient <= 0.0:
+            raise ValueError("c6_coefficient must be strictly positive.")
+
+        if self.default_blockade_radius_um <= 0.0:
+            raise ValueError("default_blockade_radius_um must be strictly positive.")
+
+        if self.max_atoms_dense <= 0 or self.max_atoms_sparse <= 0 or self.max_atoms_gpu <= 0:
+            raise ValueError("Simulation atom-count limits must be strictly positive.")
+
+        if self.max_atoms_dense > self.max_atoms_sparse:
+            raise ValueError("max_atoms_dense cannot exceed max_atoms_sparse.")
+
+        if self.max_atoms_sparse > self.max_atoms_gpu:
+            raise ValueError("max_atoms_sparse cannot exceed max_atoms_gpu.")
+
+        if self.max_atoms_evaluator_parallel <= 0:
+            raise ValueError("max_atoms_evaluator_parallel must be strictly positive.")
+
+        if not 0.0 < self.amplitude_safety_margin <= 1.0:
+            raise ValueError("amplitude_safety_margin must lie in the interval (0, 1].")
 
     def duration_offset(self, atom_count: int) -> int:
         return int(round(self.duration_offset_per_atom.default * atom_count))

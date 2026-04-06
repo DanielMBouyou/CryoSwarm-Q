@@ -10,6 +10,14 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from apps.dashboard.logic import (
+    build_campaign_table,
+    build_decision_table,
+    build_ranked_table,
+    build_register_lookup_from_documents,
+    select_noise_sensitivity_data,
+    select_robustness_chart_data,
+)
 from packages.core.config import get_settings
 from packages.core.models import DemoGoalRequest, RegisterCandidate, RobustnessReport
 from packages.db.init_db import initialize_database
@@ -19,10 +27,7 @@ from packages.orchestration.runner import run_demo_campaign
 
 def _load_register_candidates(repository: CryoSwarmRepository, campaign_id: str) -> dict[str, RegisterCandidate]:
     cursor = repository.collections["register_candidates"].find({"campaign_id": campaign_id})
-    return {
-        document["_id"]: RegisterCandidate.model_validate({k: v for k, v in document.items() if k != "_id"})
-        for document in cursor
-    }
+    return build_register_lookup_from_documents(list(cursor))
 
 
 def _render_register_plot(candidate: RegisterCandidate) -> None:
@@ -48,15 +53,11 @@ def _render_register_plot(candidate: RegisterCandidate) -> None:
 
 
 def _render_robustness_chart(reports: list[RobustnessReport]) -> None:
-    if not reports:
+    labels, nominal, average, worst = select_robustness_chart_data(reports)
+    if not labels:
         return
-    top_reports = reports[:5]
-    labels = [report.sequence_candidate_id[-6:] for report in top_reports]
-    nominal = [report.nominal_score for report in top_reports]
-    average = [report.perturbation_average for report in top_reports]
-    worst = [report.worst_case_score for report in top_reports]
 
-    x_positions = list(range(len(top_reports)))
+    x_positions = list(range(len(labels)))
     width = 0.25
     fig, ax = plt.subplots(figsize=(8, 4.5))
     ax.bar([x - width for x in x_positions], nominal, width=width, label="Nominal")
@@ -73,11 +74,7 @@ def _render_robustness_chart(reports: list[RobustnessReport]) -> None:
 
 
 def _render_noise_sensitivity(report: RobustnessReport) -> None:
-    scenario_order = ["low_noise", "medium_noise", "stressed_noise"]
-    if not report.scenario_scores:
-        return
-    labels = [label for label in scenario_order if label in report.scenario_scores]
-    values = [report.scenario_scores[label] for label in labels]
+    labels, values = select_noise_sensitivity_data(report)
     if not labels:
         return
 
@@ -143,16 +140,7 @@ if not latest_campaigns:
     st.info("No campaigns stored yet. Run a demo campaign to populate the dashboard.")
     st.stop()
 
-campaign_rows = [
-    {
-        "campaign_id": campaign.id,
-        "goal_id": campaign.goal_id,
-        "status": campaign.status.value,
-        "candidate_count": campaign.candidate_count,
-        "top_candidate_id": campaign.top_candidate_id,
-    }
-    for campaign in latest_campaigns
-]
+campaign_rows = build_campaign_table(latest_campaigns)
 st.subheader("Latest Campaigns")
 st.dataframe(campaign_rows, use_container_width=True)
 
@@ -174,19 +162,7 @@ with left_col:
     st.json(selected_campaign.model_dump(mode="json"))
 with right_col:
     st.subheader("Ranked Candidates")
-    st.dataframe(
-        [
-            {
-                "rank": candidate.final_rank,
-                "sequence_candidate_id": candidate.sequence_candidate_id,
-                "objective_score": candidate.objective_score,
-                "robustness_score": candidate.robustness_score,
-                "backend_choice": candidate.backend_choice.value,
-            }
-            for candidate in ranked_candidates
-        ],
-        use_container_width=True,
-    )
+    st.dataframe(build_ranked_table(ranked_candidates), use_container_width=True)
 
 st.subheader("Register Visualisation")
 if ranked_candidates:
@@ -218,19 +194,7 @@ else:
     st.info("Run a campaign to generate robustness reports.")
 
 st.subheader("Agent Decisions")
-st.dataframe(
-    [
-        {
-            "agent": decision.agent_name.value,
-            "subject_id": decision.subject_id,
-            "decision_type": decision.decision_type.value,
-            "status": decision.status,
-            "reasoning_summary": decision.reasoning_summary,
-        }
-        for decision in decisions
-    ],
-    use_container_width=True,
-)
+st.dataframe(build_decision_table(decisions), use_container_width=True)
 
 st.subheader("Robustness Reports")
 st.dataframe(

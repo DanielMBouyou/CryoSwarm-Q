@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections import Counter
 from statistics import mean
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from packages.core.logging import get_logger
+from packages.core.metadata_schemas import NoiseScenarioMetadata, SequenceMetadata
 from packages.core.parameter_space import PhysicsParameterSpace
 from packages.core.models import ExperimentSpec, NoiseScenario, RegisterCandidate, SequenceCandidate
 from packages.pasqal_adapters.pulser_adapter import build_sequence_from_candidate, PULSER_AVAILABLE
@@ -52,15 +53,22 @@ from packages.simulation.noise_profiles import default_noise_scenarios
 def _compute_hamiltonian_metrics(
     register_candidate: RegisterCandidate,
     sequence_candidate: SequenceCandidate,
+    param_space: PhysicsParameterSpace | None = None,
 ) -> dict[str, float | int]:
     from packages.simulation.hamiltonian import build_hamiltonian_matrix, build_sparse_hamiltonian
 
+    space = param_space or PhysicsParameterSpace.default()
     omega = float(sequence_candidate.amplitude)
     delta = float(sequence_candidate.detuning)
     atom_count = register_candidate.atom_count
 
-    if atom_count > 14 and SCIPY_SPARSE_AVAILABLE:
-        hamiltonian = build_sparse_hamiltonian(register_candidate.coordinates, omega, delta)
+    if atom_count > space.max_atoms_evaluator_parallel and SCIPY_SPARSE_AVAILABLE:
+        hamiltonian = build_sparse_hamiltonian(
+            register_candidate.coordinates,
+            omega,
+            delta,
+            c6=space.c6_coefficient,
+        )
         spectral_radius = 0.0
         if hamiltonian.shape[0] > 1:
             eigval = eigsh(hamiltonian, k=1, which="LM", return_eigenvectors=False)
@@ -71,7 +79,12 @@ def _compute_hamiltonian_metrics(
             "spectral_radius": round(spectral_radius, 6),
         }
 
-    dense = build_hamiltonian_matrix(register_candidate.coordinates, omega, delta)
+    dense = build_hamiltonian_matrix(
+        register_candidate.coordinates,
+        omega,
+        delta,
+        c6=space.c6_coefficient,
+    )
     eigvals = np.linalg.eigvalsh(dense)
     return {
         "dimension": int(dense.shape[0]),
@@ -171,8 +184,12 @@ def _extract_observables(
             for i in range(n)
             for j in range(i + 1, n)
         ]
-    except Exception:
-        pass  # noisy simulations may yield density matrices
+    except Exception as exc:
+        logger.debug(
+            "Extended observable extraction failed for %d atoms: %s",
+            n,
+            exc,
+        )
 
     observables = {
         "rydberg_density": round(rydberg_density, 6),
@@ -206,17 +223,34 @@ def simulate_sequence_candidate(
     noise_scenario: NoiseScenario | None = None,
     param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
-    if register_candidate.atom_count > 14:
+    space = param_space or PhysicsParameterSpace.default()
+    if register_candidate.atom_count > space.max_atoms_evaluator_parallel:
         logger.warning(
             "Skipping Pulser/Qutip evaluation for %s atoms and using fallback path.",
             register_candidate.atom_count,
         )
-        return _simulate_with_numpy_fallback(spec, register_candidate, sequence_candidate, noise_scenario)
+        return _simulate_with_numpy_fallback(
+            spec,
+            register_candidate,
+            sequence_candidate,
+            noise_scenario,
+            param_space=space,
+        )
 
     if not EMULATOR_AVAILABLE or not PULSER_AVAILABLE:
-        return _simulate_with_numpy_fallback(spec, register_candidate, sequence_candidate, noise_scenario)
+        return _simulate_with_numpy_fallback(
+            spec,
+            register_candidate,
+            sequence_candidate,
+            noise_scenario,
+            param_space=space,
+        )
 
-    sequence = build_sequence_from_candidate(register_candidate, sequence_candidate)
+    sequence = build_sequence_from_candidate(
+        register_candidate,
+        sequence_candidate,
+        param_space=space,
+    )
     noise_model = _build_noise_model(noise_scenario) if noise_scenario else None
     emulator = QutipEmulator.from_sequence(sequence, noise_model=noise_model)
     results = emulator.run()
@@ -226,10 +260,14 @@ def simulate_sequence_candidate(
         results,
         spec,
         register_candidate,
-        param_space,
+        space,
     )
 
-    hamiltonian_metrics = _compute_hamiltonian_metrics(register_candidate, sequence_candidate)
+    hamiltonian_metrics = _compute_hamiltonian_metrics(
+        register_candidate,
+        sequence_candidate,
+        param_space=space,
+    )
     observables["hamiltonian_metrics"] = hamiltonian_metrics
     observables["noise_label"] = noise_scenario.label.value if noise_scenario else "noiseless"
     return observable_score, observables, {**summary_metrics, **hamiltonian_metrics}
@@ -299,13 +337,16 @@ def _simulate_with_numpy_fallback(
     register_candidate: RegisterCandidate,
     sequence_candidate: SequenceCandidate,
     noise_scenario: NoiseScenario | None = None,
+    param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
     """Run a lightweight exact-diag simulation via numpy/scipy."""
     from packages.simulation.numpy_backend import simulate_rydberg_evolution
 
+    space = param_space or PhysicsParameterSpace.default()
     omega_max = float(sequence_candidate.amplitude)
     delta_start = float(sequence_candidate.detuning)
-    delta_end = float(sequence_candidate.metadata.get("detuning_end", delta_start * 0.25))
+    sequence_metadata = cast(SequenceMetadata, sequence_candidate.metadata)
+    delta_end = float(sequence_metadata.get("detuning_end", delta_start * 0.25))
     duration_ns = float(sequence_candidate.duration_ns)
     omega_shape = "constant"
     family = sequence_candidate.sequence_family.value
@@ -319,7 +360,8 @@ def _simulate_with_numpy_fallback(
         omega_max *= 1.0 + rng.normal(0.0, noise_scenario.amplitude_jitter)
         delta_start += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_start) + 0.1)
         delta_end += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_end) + 0.1)
-        spatial_inhom = float(noise_scenario.metadata.get("spatial_inhomogeneity", 0.0))
+        noise_metadata = cast(NoiseScenarioMetadata, noise_scenario.metadata)
+        spatial_inhom = float(noise_metadata.get("spatial_inhomogeneity", 0.0))
         spatial_factors = np.ones(register_candidate.atom_count, dtype=np.float64)
         if spatial_inhom > 0.0:
             spatial_factors = 1.0 + rng.normal(0.0, spatial_inhom, size=register_candidate.atom_count)
@@ -336,6 +378,9 @@ def _simulate_with_numpy_fallback(
         duration_ns=duration_ns,
         omega_shape=omega_shape,
         n_steps=150,
+        c6=space.c6_coefficient,
+        max_atoms_dense=space.max_atoms_dense,
+        max_atoms_sparse=space.max_atoms_sparse,
     )
 
     ryd_dens = float(result["total_rydberg_fraction"])
@@ -343,7 +388,11 @@ def _simulate_with_numpy_fallback(
     observable_score = round(density_score, 4)
 
     n = register_candidate.atom_count
-    hamiltonian_metrics: dict[str, Any] = _compute_hamiltonian_metrics(register_candidate, sequence_candidate)
+    hamiltonian_metrics: dict[str, Any] = _compute_hamiltonian_metrics(
+        register_candidate,
+        sequence_candidate,
+        param_space=space,
+    )
 
     observables: dict[str, Any] = {
         "rydberg_density": round(ryd_dens, 6),

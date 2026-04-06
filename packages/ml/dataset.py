@@ -19,6 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from packages.core.enums import SequenceFamily
+from packages.core.logging import get_logger
 from packages.core.models import (
     EvaluationResult,
     RegisterCandidate,
@@ -56,6 +57,8 @@ FAMILY_ENCODING: dict[str, int] = {
 INPUT_DIM = 10
 INPUT_DIM_V2 = 18
 OUTPUT_DIM = 4
+_DEFAULT_PARAM_SPACE = PhysicsParameterSpace.default()
+logger = get_logger(__name__)
 
 
 def _encode_layout(name: str) -> int:
@@ -71,7 +74,7 @@ def build_feature_vector(
     sequence: SequenceCandidate,
 ) -> NDArray[np.float32]:
     """Fixed-size input feature vector from a (register, sequence) pair."""
-    spacing = float(register.metadata.get("spacing_um", 7.0))
+    spacing = float(register.metadata.get("spacing_um", _DEFAULT_PARAM_SPACE.geometry.spacing_um.default))
     return np.array(
         [
             float(register.atom_count),
@@ -100,7 +103,7 @@ def build_feature_vector_v2(
     blockade_pairs_total = max(register.atom_count * (register.atom_count - 1) / 2, 1)
     blockade_fraction = float(register.blockade_pair_count / blockade_pairs_total)
 
-    interaction_energy = 862690.0 / (spacing**6) if spacing > 0 else 0.0
+    interaction_energy = space.c6_coefficient / (spacing**6) if spacing > 0 else 0.0
     omega_over_interaction = sequence.amplitude / max(interaction_energy, 1e-10) if interaction_energy else 0.0
     omega_over_interaction_norm = min(omega_over_interaction, 10.0) / 10.0
 
@@ -214,6 +217,7 @@ class CandidateDatasetBuilder:
         eval_lookup = {e.sequence_candidate_id: e for e in evaluations}
 
         added = 0
+        dropped = 0
         for seq in sequences:
             reg = reg_lookup.get(seq.register_candidate_id)
             report = report_lookup.get(seq.id)
@@ -221,6 +225,13 @@ class CandidateDatasetBuilder:
             if reg and report and evaluation:
                 self.add_sample(reg, seq, report, evaluation)
                 added += 1
+            else:
+                dropped += 1
+        logger.info(
+            "Pipeline ingestion: %d accepted, %d dropped (missing pairs)",
+            added,
+            dropped,
+        )
         return added
 
     def to_numpy(self) -> tuple[NDArray[np.float32], NDArray[np.float32]]:

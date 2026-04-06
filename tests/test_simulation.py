@@ -8,7 +8,10 @@ from packages.simulation.hamiltonian import blockade_radius, ground_state
 from packages.simulation.observables import rydberg_density, total_rydberg_fraction
 
 pytest.importorskip("scipy", reason="scipy required for numpy backend")
-from packages.simulation.numpy_backend import simulate_rydberg_evolution  # noqa: E402
+from packages.simulation.numpy_backend import (  # noqa: E402
+    estimate_discretization_error,
+    simulate_rydberg_evolution,
+)
 
 
 class TestNumPySimulation:
@@ -95,9 +98,89 @@ class TestNumPySimulation:
             "final_state", "n_atoms", "rydberg_densities",
             "pair_correlations", "connected_correlations",
             "total_rydberg_fraction", "antiferromagnetic_order",
-            "entanglement_entropy", "top_bitstrings", "backend", "n_steps",
+            "entanglement_entropy", "top_bitstrings", "backend", "n_steps", "dt_us",
         }
         assert expected_keys <= set(result.keys())
+
+
+class TestDiscretizationError:
+    """Tests for the time-discretization error estimator."""
+
+    def test_constant_hamiltonian_zero_bound(self) -> None:
+        """Constant Omega and delta give zero estimated dH/dt."""
+        result = estimate_discretization_error(
+            coords=[(0.0, 0.0), (7.0, 0.0)],
+            omega_max=5.0,
+            delta_start=-10.0,
+            delta_end=-10.0,
+            duration_ns=1000,
+            n_steps=50,
+            omega_shape="constant",
+        )
+        assert result["analytical_bound"] == pytest.approx(0.0, abs=1e-6)
+        assert result["fidelity_half_steps"] > 0.9999
+
+    def test_sweep_produces_nonzero_bound(self) -> None:
+        """A detuning sweep should induce a non-zero analytical bound."""
+        result = estimate_discretization_error(
+            coords=[(0.0, 0.0), (7.0, 0.0)],
+            omega_max=5.0,
+            delta_start=-20.0,
+            delta_end=10.0,
+            duration_ns=2000,
+            n_steps=100,
+        )
+        assert result["analytical_bound"] > 0.0
+
+    def test_more_steps_improve_fidelity(self) -> None:
+        """Increasing the number of slices should not degrade the estimate."""
+        coords = [(0.0, 0.0), (7.0, 0.0), (14.0, 0.0)]
+        result_50 = estimate_discretization_error(
+            coords=coords,
+            omega_max=5.0,
+            delta_start=-20.0,
+            delta_end=10.0,
+            duration_ns=3000,
+            n_steps=50,
+        )
+        result_200 = estimate_discretization_error(
+            coords=coords,
+            omega_max=5.0,
+            delta_start=-20.0,
+            delta_end=10.0,
+            duration_ns=3000,
+            n_steps=200,
+        )
+        assert result_200["fidelity_half_steps"] >= result_50["fidelity_half_steps"] - 1e-6
+
+    def test_recommended_steps_reasonable(self) -> None:
+        """Recommended n_steps should never be below the current one."""
+        result = estimate_discretization_error(
+            coords=[(0.0, 0.0), (7.0, 0.0)],
+            omega_max=5.0,
+            delta_start=-20.0,
+            delta_end=10.0,
+            duration_ns=2000,
+            n_steps=100,
+        )
+        assert result["recommended_n_steps"] >= result["n_steps_used"]
+
+    def test_result_keys(self) -> None:
+        """Output dict should contain the full diagnostic payload."""
+        result = estimate_discretization_error(
+            coords=[(0.0, 0.0), (7.0, 0.0)],
+            omega_max=5.0,
+            delta_start=-10.0,
+            delta_end=5.0,
+            duration_ns=1000,
+            n_steps=50,
+        )
+        assert {
+            "analytical_bound",
+            "fidelity_half_steps",
+            "recommended_n_steps",
+            "n_steps_used",
+        } <= set(result.keys())
 
 
 class TestGroundStatePhysics:

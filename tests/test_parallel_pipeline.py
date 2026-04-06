@@ -6,6 +6,8 @@ import pytest
 from packages.core.models import ExperimentGoal, RobustnessReport
 from packages.orchestration.pipeline import CryoSwarmPipeline
 
+pytestmark = pytest.mark.slow
+
 
 class _FakeFuture:
     def __init__(self, fn, *args, **kwargs) -> None:

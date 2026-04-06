@@ -3,16 +3,31 @@
 Computes expectation values, correlations, and entanglement measures
 from quantum state vectors in the {|g>, |r>} computational basis.
 
-Convention
-----------
-|g> = |0>, |r> = |1> per atom.
-Basis ordering: |q0 q1 ... q_{N-1}> with q0 as the most significant bit.
-n_i = |r_i><r_i| measures Rydberg occupation of atom i.
+Bitstring convention (project-wide)
+-----------------------------------
+- |g> = |0>, |r> = |1> per atom.
+- Basis ordering: |q0 q1 ... q_{N-1}> with **q0 as the most significant bit (MSB)**.
+- Integer index of state |b_0 b_1 ... b_{N-1}> = sum_i b_i * 2^{N-1-i}.
+- Bit extraction: atom *i* is excited iff ``(index >> (n_atoms - 1 - i)) & 1``.
+- Bitstring format: ``format(index, f'0{n_atoms}b')`` — leftmost character is q0.
+- n_i = |r_i><r_i| measures Rydberg occupation of atom i.
+
+This convention is consistent with Pulser's default qubit ordering.
+All modules in ``packages/simulation/`` and ``packages/ml/gpu_backend.py``
+MUST follow this convention.
 """
 from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+def atom_excited(basis_index: int, atom: int, n_atoms: int) -> bool:
+    """Check if *atom* is in |r> in the given computational-basis index.
+
+    Uses the project-wide MSB convention: atom 0 is the most significant bit.
+    """
+    return bool((basis_index >> (n_atoms - 1 - atom)) & 1)
 
 
 def rydberg_density(
@@ -32,7 +47,7 @@ def rydberg_density(
         if p < 1e-15:
             continue
         for i in range(n_atoms):
-            if (basis >> (n_atoms - 1 - i)) & 1:
+            if atom_excited(basis, i, n_atoms):
                 densities[i] += p
     return densities
 
@@ -52,7 +67,7 @@ def pair_correlation(
         p = probs[basis]
         if p < 1e-15:
             continue
-        excited = [i for i in range(n_atoms) if (basis >> (n_atoms - 1 - i)) & 1]
+        excited = [i for i in range(n_atoms) if atom_excited(basis, i, n_atoms)]
         for idx_a, a in enumerate(excited):
             for b in excited[idx_a + 1 :]:
                 corr[a, b] += p

@@ -7,7 +7,7 @@ from packages.core.models import EvaluationResult
 from packages.db.repositories import CryoSwarmRepository
 
 
-router = APIRouter(prefix="/campaigns", tags=["candidates"])
+router = APIRouter(tags=["candidates"])
 
 
 @router.get("/{campaign_id}/candidates", response_model=list[EvaluationResult])

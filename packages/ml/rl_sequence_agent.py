@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from packages.agents.base import BaseAgent
+from packages.agents.protocols import SequenceProtocol
 from packages.agents.sequence_agent import SequenceAgent
 from packages.core.enums import AgentName
 from packages.core.logging import get_logger
@@ -36,7 +37,7 @@ class RLSequenceAgent(BaseAgent):
         n_candidates: int = 5,
         temperature: float = 0.3,
         enabled: bool = False,
-        heuristic_agent: SequenceAgent | None = None,
+        heuristic_agent: SequenceProtocol | None = None,
     ) -> None:
         super().__init__()
         self.param_space = param_space or PhysicsParameterSpace.default()
@@ -44,7 +45,7 @@ class RLSequenceAgent(BaseAgent):
         self.n_candidates = n_candidates
         self.temperature = temperature
         self.enabled = enabled
-        self.heuristic_agent = heuristic_agent or SequenceAgent(param_space=self.param_space)
+        self.heuristic_agent: SequenceProtocol = heuristic_agent or SequenceAgent(param_space=self.param_space)
         self.checkpoint_path = Path(checkpoint_path) if checkpoint_path else None
 
         if enabled and checkpoint_path and TORCH_AVAILABLE:
@@ -121,7 +122,15 @@ class RLSequenceAgent(BaseAgent):
                     "temperature": self.temperature,
                 },
             )
-            seq.serialized_pulser_sequence = build_simple_sequence_summary(register_candidate, seq)
+            seq = seq.model_copy(
+                update={
+                    "serialized_pulser_sequence": build_simple_sequence_summary(
+                        register_candidate,
+                        seq,
+                        param_space=self.param_space,
+                    )
+                }
+            )
             candidates.append(seq)
 
         return candidates

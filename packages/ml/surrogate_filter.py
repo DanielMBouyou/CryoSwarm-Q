@@ -67,7 +67,7 @@ class SurrogateFilter:
 
         from packages.ml.surrogate import SurrogateModel, SurrogateModelV2
 
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         version = checkpoint.get("version") if isinstance(checkpoint, dict) else None
         config = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
 
@@ -175,18 +175,34 @@ class SurrogateFilter:
             for idx, score, unc in zip(valid_indices, robustness_scores, robustness_uncertainty)
             if unc < self.max_uncertainty
         ]
+        rejected_uncertain = [
+            (idx, unc)
+            for idx, unc in zip(valid_indices, robustness_uncertainty)
+            if unc >= self.max_uncertainty
+        ]
+        for idx, uncertainty_score in rejected_uncertain:
+            logger.debug(
+                "Candidate %s rejected: uncertainty %.4f exceeds threshold",
+                sequences[idx].id,
+                float(uncertainty_score),
+            )
         scored.sort(key=lambda item: item[1], reverse=True)
 
-        kept = [
-            sequences[idx]
-            for idx, score, _ in scored[:self.top_k]
-            if score >= self.min_score
-        ]
+        kept: list[SequenceCandidate] = []
+        for idx, score, _ in scored[:self.top_k]:
+            if score >= self.min_score:
+                kept.append(sequences[idx])
+            else:
+                logger.debug(
+                    "Candidate %s rejected: predicted score %.4f below threshold",
+                    sequences[idx].id,
+                    float(score),
+                )
         logger.info(
             "EnsembleFilter: %d/%d kept (rejected %d uncertain, top_k=%d)",
             len(kept),
             len(sequences),
-            len(valid_indices) - len(scored),
+            len(rejected_uncertain),
             self.top_k,
         )
         return kept
@@ -214,11 +230,16 @@ class SurrogateFilter:
 
         scored = list(zip(valid_indices, robustness_scores))
         scored.sort(key=lambda item: item[1], reverse=True)
-        kept_indices = [
-            idx
-            for idx, score in scored[:self.top_k]
-            if score >= self.min_score
-        ]
+        kept_indices: list[int] = []
+        for idx, score in scored[:self.top_k]:
+            if score >= self.min_score:
+                kept_indices.append(idx)
+            else:
+                logger.debug(
+                    "Candidate %s rejected: predicted score %.4f below threshold",
+                    sequences[idx].id,
+                    float(score),
+                )
         filtered = [sequences[idx] for idx in kept_indices]
 
         logger.info(

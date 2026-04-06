@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from math import ceil
+from typing import cast
 
 import numpy as np
 
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName
+from packages.core.metadata_schemas import SpecMetadata
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate
 from packages.core.parameter_space import PhysicsParameterSpace
 from packages.pasqal_adapters.pulser_adapter import create_simple_register, summarize_register_physics
@@ -28,7 +30,8 @@ class GeometryAgent(BaseAgent):
         layouts = self._layout_order(spec.preferred_layouts, memory_records or [])
         spacing_values = self._spacing_values(memory_records or [])
         candidates: list[RegisterCandidate] = []
-        max_candidates = int(spec.metadata.get("max_register_candidates", 4))
+        spec_metadata = cast(SpecMetadata, spec.metadata)
+        max_candidates = int(spec_metadata.get("max_register_candidates", 4))
 
         for atom_count in atom_targets:
             for layout in layouts:

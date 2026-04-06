@@ -83,6 +83,18 @@ class TestSurrogateModel:
         x = torch.randn(4, INPUT_DIM)
         torch.testing.assert_close(model(x), model2(x))
 
+    def test_save_load_weights_only(self, tmp_path):
+        from packages.ml.surrogate import SurrogateModel
+
+        model = SurrogateModel(input_dim=INPUT_DIM, output_dim=OUTPUT_DIM, hidden=32)
+        path = tmp_path / "weights_only_model.pt"
+        model.save(path)
+
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
+        assert "model" in checkpoint
+        assert "config" in checkpoint
+        assert checkpoint["version"] == "v1"
+
 
 class TestSurrogateTrainer:
     def test_fit_runs(self, train_val_split):

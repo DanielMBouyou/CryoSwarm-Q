@@ -9,6 +9,12 @@ Units
 - Frequencies / energies: rad/us  (with hbar = 1)
 - C6 coefficient: rad * um^6 / us
 
+Bitstring convention
+--------------------
+All bit-level operations use the project-wide MSB convention:
+atom *i* corresponds to bit position ``(n_atoms - 1 - i)`` in the
+integer basis index. See ``packages/simulation/observables.py``.
+
 The default C6 value corresponds to 87-Rb |70S_{1/2}>.
 """
 from __future__ import annotations
@@ -17,6 +23,9 @@ from itertools import combinations
 
 import numpy as np
 from numpy.typing import NDArray
+
+from packages.core.logging import get_logger
+from packages.core.parameter_space import PhysicsParameterSpace
 
 try:
     from scipy.sparse import csc_matrix, diags, eye, kron
@@ -32,8 +41,10 @@ except ImportError:
     eigsh = None  # type: ignore[assignment]
 
 
-C6_RB87_70S: float = 862690.0
+C6_RB87_70S: float = PhysicsParameterSpace.default().c6_coefficient
 """C6 / (2*pi*hbar) for 87-Rb |70S_{1/2}> in rad*um^6/us."""
+
+logger = get_logger(__name__)
 
 
 # ---------- distance / interaction helpers ----------
@@ -68,7 +79,7 @@ def van_der_waals_matrix(
 
 
 def blockade_radius(omega: float, c6: float = C6_RB87_70S) -> float:
-    """R_b = (C6 / Omega)^{1/6}  in um."""
+    """R_b = (C6 / Omega)^{1/6} in um."""
     if omega <= 0:
         return float("inf")
     return float((c6 / omega) ** (1.0 / 6.0))
@@ -88,18 +99,119 @@ def interaction_graph(
 # ---------- Maximum Independent Set ----------
 
 
+def _greedy_independent_set(
+    adjacency: NDArray[np.bool_],
+) -> list[int]:
+    """Greedy MIS heuristic using repeated minimum-degree vertex selection."""
+    available = set(range(adjacency.shape[0]))
+    result: list[int] = []
+
+    while available:
+        best = min(
+            available,
+            key=lambda vertex: sum(
+                1
+                for neighbour in available
+                if neighbour != vertex and adjacency[vertex, neighbour]
+            ),
+        )
+        result.append(best)
+        neighbours = {vertex for vertex in available if adjacency[best, vertex]}
+        available -= neighbours | {best}
+
+    return sorted(result)
+
+
+def _greedy_mis_multi(
+    adjacency: NDArray[np.bool_],
+    n_restarts: int = 10,
+    max_results: int = 20,
+) -> list[list[int]]:
+    """Run the greedy MIS heuristic with randomised restarts.
+
+    Returns up to *max_results* distinct maximal independent sets having the
+    largest cardinality observed across the randomised restarts.
+    """
+    n = adjacency.shape[0]
+    rng = np.random.default_rng(42)
+    best_size = 0
+    results: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for restart in range(n_restarts):
+        available = set(range(n))
+        result: list[int] = []
+        order = list(range(n)) if restart == 0 else rng.permutation(n).tolist()
+
+        while available:
+            candidates = [vertex for vertex in order if vertex in available]
+            if not candidates:
+                break
+            best = min(
+                candidates,
+                key=lambda vertex: (
+                    sum(
+                        1
+                        for neighbour in available
+                        if neighbour != vertex and adjacency[vertex, neighbour]
+                    ),
+                    order.index(vertex),
+                ),
+            )
+            result.append(best)
+            neighbours = {vertex for vertex in available if adjacency[best, vertex]}
+            available -= neighbours | {best}
+
+        result_sorted = sorted(result)
+        key = tuple(result_sorted)
+        size = len(result_sorted)
+
+        if size > best_size:
+            best_size = size
+            results = [result_sorted]
+            seen = {key}
+        elif size == best_size and key not in seen:
+            results.append(result_sorted)
+            seen.add(key)
+            if len(results) >= max_results:
+                break
+
+    if not results:
+        fallback = _greedy_independent_set(adjacency)
+        return [fallback] if fallback else []
+    return results
+
+
+_MIS_EXACT_THRESHOLD: int = 15
+"""Maximum atom count for exact MIS enumeration before switching to heuristics."""
+
+
 def find_maximum_independent_sets(
     adjacency: NDArray[np.bool_],
     max_results: int = 20,
 ) -> list[list[int]]:
-    """Brute-force MIS enumeration (feasible for ≤20 atoms).
+    """Find maximum independent sets on the blockade graph.
+
+    For n <= 15 atoms, performs exact brute-force enumeration.
+    For 15 < n <= 50, uses a randomised greedy heuristic.
+    For n > 50, returns an empty list.
 
     An independent set contains no two adjacent (blockaded) vertices.
-    Returns all sets of maximum cardinality, up to *max_results*.
+    Returns sets of maximum cardinality found, up to *max_results*.
     """
     n = adjacency.shape[0]
-    if n > 20:
+    if n > 50:
+        logger.warning("MIS computation skipped for n=%d atoms (limit: 50).", n)
         return []
+
+    if n > _MIS_EXACT_THRESHOLD:
+        logger.debug(
+            "Using greedy MIS heuristic for n=%d atoms (exact threshold: %d).",
+            n,
+            _MIS_EXACT_THRESHOLD,
+        )
+        return _greedy_mis_multi(adjacency, n_restarts=max(20, n), max_results=max_results)
+
     best_size = 0
     results: list[list[int]] = []
     for size in range(n, 0, -1):
@@ -132,9 +244,9 @@ def mis_bitstrings(
     adj = interaction_graph(coords, omega, c6)
     mis_sets = find_maximum_independent_sets(adj)
     out: list[str] = []
-    for s in mis_sets:
+    for independent_set in mis_sets:
         bits = ["0"] * n
-        for idx in s:
+        for idx in independent_set:
             bits[idx] = "1"
         out.append("".join(bits))
     return out
@@ -148,6 +260,7 @@ def build_hamiltonian_matrix(
     omega: float,
     delta: float,
     c6: float = C6_RB87_70S,
+    max_atoms_dense: int | None = None,
 ) -> NDArray[np.complex128]:
     r"""Full Rydberg Hamiltonian for exact diagonalisation.
 
@@ -155,12 +268,18 @@ def build_hamiltonian_matrix(
         - delta   sum_i n_i
         + sum_{i<j} U_{ij} n_i n_j
 
-    Returns a dense 2^N x 2^N matrix (feasible for N <= 14).
+    Returns a dense 2^N x 2^N matrix with the default threshold sourced from
+    ``PhysicsParameterSpace.max_atoms_evaluator_parallel``.
     """
     n = len(coords)
-    if n > 14:
+    dense_limit = (
+        max_atoms_dense
+        if max_atoms_dense is not None
+        else PhysicsParameterSpace.default().max_atoms_evaluator_parallel
+    )
+    if n > dense_limit:
         raise ValueError(
-            "Dense Hamiltonian limited to 14 atoms (2^14 = 16384 dim). Use MPS for larger systems."
+            f"Dense Hamiltonian limited to {dense_limit} atoms. Use sparse methods for larger systems."
         )
     dim = 2**n
     U = van_der_waals_matrix(coords, c6)
@@ -171,24 +290,24 @@ def build_hamiltonian_matrix(
 
     def _site_op(op: NDArray[np.complex128], site: int) -> NDArray[np.complex128]:
         result = np.array([[1.0]], dtype=np.complex128)
-        for j in range(n):
-            result = np.kron(result, op if j == site else eye2)
+        for idx in range(n):
+            result = np.kron(result, op if idx == site else eye2)
         return result
 
     H = np.zeros((dim, dim), dtype=np.complex128)
 
-    for i in range(n):
-        H += (omega / 2.0) * _site_op(sigma_x, i)
-        H -= delta * _site_op(n_op, i)
+    for idx in range(n):
+        H += (omega / 2.0) * _site_op(sigma_x, idx)
+        H -= delta * _site_op(n_op, idx)
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if U[i, j] < 1e-10:
+    for row_index in range(n):
+        for col_index in range(row_index + 1, n):
+            if U[row_index, col_index] < 1e-10:
                 continue
             ni_nj = np.array([[1.0]], dtype=np.complex128)
-            for k in range(n):
-                ni_nj = np.kron(ni_nj, n_op if k in (i, j) else eye2)
-            H += U[i, j] * ni_nj
+            for idx in range(n):
+                ni_nj = np.kron(ni_nj, n_op if idx in (row_index, col_index) else eye2)
+            H += U[row_index, col_index] * ni_nj
 
     return H
 

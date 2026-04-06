@@ -103,6 +103,76 @@ class TestMIS:
             assert len(s) == 3
             assert all(c in "01" for c in s)
 
+    def test_disconnected_graph_all_selected(self) -> None:
+        """No edges implies every vertex belongs to the MIS."""
+        adj = np.zeros((4, 4), dtype=bool)
+        sets = find_maximum_independent_sets(adj)
+        assert len(sets) >= 1
+        assert [0, 1, 2, 3] in sets
+
+    def test_complete_graph_single_vertex(self) -> None:
+        """A clique has MIS size 1."""
+        n = 5
+        adj = np.ones((n, n), dtype=bool)
+        np.fill_diagonal(adj, False)
+        sets = find_maximum_independent_sets(adj)
+        assert len(sets) >= 1
+        assert all(len(candidate) == 1 for candidate in sets)
+
+    def test_greedy_fallback_large_system(self) -> None:
+        """For n > 15, the greedy heuristic should return valid sets."""
+        n = 20
+        rng = np.random.default_rng(42)
+        adj = rng.random((n, n)) < 0.3
+        adj = np.logical_or(adj, adj.T)
+        np.fill_diagonal(adj, False)
+
+        sets = find_maximum_independent_sets(adj)
+        assert len(sets) >= 1
+        for candidate in sets:
+            for index, vertex_a in enumerate(candidate):
+                for vertex_b in candidate[index + 1 :]:
+                    assert not adj[vertex_a, vertex_b]
+
+    def test_greedy_result_is_maximal(self) -> None:
+        """Heuristic MIS outputs must be maximal independent sets."""
+        n = 18
+        adj = np.zeros((n, n), dtype=bool)
+        for idx in range(n - 1):
+            adj[idx, idx + 1] = True
+            adj[idx + 1, idx] = True
+
+        sets = find_maximum_independent_sets(adj)
+        assert len(sets) >= 1
+        for candidate in sets:
+            candidate_set = set(candidate)
+            for vertex in range(n):
+                if vertex in candidate_set:
+                    continue
+                assert any(adj[vertex, neighbour] for neighbour in candidate_set)
+
+    def test_greedy_matches_exact_for_small(self) -> None:
+        """For small systems, greedy restarts should match the exact MIS size."""
+        from packages.simulation.hamiltonian import _greedy_mis_multi
+
+        n = 10
+        adj = np.zeros((n, n), dtype=bool)
+        for idx in range(n - 1):
+            adj[idx, idx + 1] = True
+            adj[idx + 1, idx] = True
+
+        exact = find_maximum_independent_sets(adj)
+        greedy = _greedy_mis_multi(adj, n_restarts=50)
+        exact_size = len(exact[0]) if exact else 0
+        greedy_size = len(greedy[0]) if greedy else 0
+        assert greedy_size == exact_size
+
+    def test_very_large_system_returns_empty(self) -> None:
+        """Very large systems are skipped for safety."""
+        adj = np.zeros((60, 60), dtype=bool)
+        sets = find_maximum_independent_sets(adj)
+        assert sets == []
+
 
 # ---- Hamiltonian ----
 

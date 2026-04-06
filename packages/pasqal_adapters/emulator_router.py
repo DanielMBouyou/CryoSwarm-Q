@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import cast
+
 from packages.core.enums import BackendType
+from packages.core.metadata_schemas import SequenceMetadata
 from packages.core.models import BackendChoice, ExperimentSpec, RobustnessReport, SequenceCandidate
 
 
@@ -9,7 +12,8 @@ def recommend_backend(
     sequence: SequenceCandidate,
     report: RobustnessReport,
 ) -> BackendChoice:
-    atom_count = int(sequence.metadata.get("atom_count", spec.max_atoms))
+    sequence_metadata = cast(SequenceMetadata, sequence.metadata)
+    atom_count = int(sequence_metadata.get("atom_count", spec.max_atoms))
     state_dimension = 2**atom_count
     hamiltonian_dimension = int(report.hamiltonian_metrics.get("dimension", state_dimension))
 

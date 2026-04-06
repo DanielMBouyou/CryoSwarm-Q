@@ -21,6 +21,12 @@ class Settings(BaseModel):
     log_level: str = "INFO"
     mongodb_uri: str = ""
     mongodb_db: str = "cryoswarm_q"
+    mongodb_connect_timeout_ms: int = 5000
+    mongodb_server_selection_timeout_ms: int = 5000
+    mongodb_socket_timeout_ms: int = 10000
+    mongodb_max_pool_size: int = 20
+    cors_origins: str = ""
+    api_key: str = ""
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_base_url: str = "http://localhost:8000"
@@ -33,6 +39,10 @@ class Settings(BaseModel):
     @property
     def has_mongodb(self) -> bool:
         return bool(self.mongodb_uri)
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key)
 
     @property
     def has_pasqal_cloud_credentials(self) -> bool:
@@ -55,6 +65,12 @@ def get_settings() -> Settings:
         mongodb_uri=os.getenv("MONGODB_URI", ""),
         mongodb_db=os.getenv("MONGODB_DB")
         or os.getenv("MONGODB_DATABASE", "cryoswarm_q"),
+        mongodb_connect_timeout_ms=int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000")),
+        mongodb_server_selection_timeout_ms=int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "5000")),
+        mongodb_socket_timeout_ms=int(os.getenv("MONGODB_SOCKET_TIMEOUT_MS", "10000")),
+        mongodb_max_pool_size=int(os.getenv("MONGODB_MAX_POOL_SIZE", "20")),
+        cors_origins=os.getenv("CORS_ORIGINS", ""),
+        api_key=os.getenv("CRYOSWARM_API_KEY", ""),
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=int(os.getenv("API_PORT", "8000")),
         api_base_url=os.getenv("API_BASE_URL", "http://localhost:8000"),

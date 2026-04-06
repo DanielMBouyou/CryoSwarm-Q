@@ -3,10 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from packages.core.config import get_settings
+from packages.core.logging import get_logger
 from packages.db.mongodb import get_mongo_client
 
 
 router = APIRouter(tags=["health"])
+logger = get_logger(__name__)
 
 
 @router.get("/health")
@@ -27,5 +29,6 @@ def health() -> dict[str, object]:
         client.admin.command("ping")
         payload["mongodb_ping"] = "ok"
     except Exception as exc:  # pragma: no cover - depends on external service
-        payload["mongodb_ping"] = f"failed: {exc}"
+        logger.warning("MongoDB ping failed: %s", exc)
+        payload["mongodb_ping"] = "failed"
     return payload

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from apps.api.auth import verify_api_key
 from apps.api.dependencies import get_repository
 from packages.core.enums import GoalStatus
 from packages.core.models import ExperimentGoal, ExperimentGoalCreate
@@ -11,7 +12,11 @@ from packages.db.repositories import CryoSwarmRepository
 router = APIRouter(prefix="/goals", tags=["goals"])
 
 
-@router.post("", response_model=ExperimentGoal)
+@router.post(
+    "",
+    response_model=ExperimentGoal,
+    dependencies=[Depends(verify_api_key)],
+)
 def create_goal(
     payload: ExperimentGoalCreate,
     repository: CryoSwarmRepository = Depends(get_repository),

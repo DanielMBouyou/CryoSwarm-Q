@@ -6,6 +6,7 @@ import pytest
 
 from packages.simulation.observables import (
     antiferromagnetic_order,
+    atom_excited,
     bitstring_probabilities,
     connected_correlation,
     entanglement_entropy,
@@ -48,6 +49,75 @@ def _neel_state(n: int) -> np.ndarray:
     psi = np.zeros(2**n, dtype=np.complex128)
     psi[idx] = 1.0
     return psi
+
+
+class TestBitstringConvention:
+    """Verify MSB bitstring convention consistency across modules."""
+
+    def test_atom_excited_msb(self) -> None:
+        """atom_excited follows MSB: atom 0 is the highest bit."""
+        assert atom_excited(5, 0, 3) is True
+        assert atom_excited(5, 1, 3) is False
+        assert atom_excited(5, 2, 3) is True
+
+    def test_atom_excited_single_atom(self) -> None:
+        assert atom_excited(0, 0, 1) is False
+        assert atom_excited(1, 0, 1) is True
+
+    def test_rydberg_density_matches_convention(self) -> None:
+        """rydberg_density of |101> should flag atoms 0 and 2."""
+        psi = np.zeros(8, dtype=np.complex128)
+        psi[5] = 1.0
+        dens = rydberg_density(psi, 3)
+        np.testing.assert_allclose(dens, [1.0, 0.0, 1.0])
+
+    def test_bitstring_format_matches_convention(self) -> None:
+        """bitstring_probabilities should use format(idx, '0Nb')."""
+        psi = np.zeros(8, dtype=np.complex128)
+        psi[5] = 1.0
+        probs = bitstring_probabilities(psi, 3, top_k=1)
+        assert probs[0][0] == "101"
+
+    def test_gpu_n_op_consistent(self) -> None:
+        """GPU _n_op_diagonal must match observables.rydberg_density."""
+        from packages.ml.gpu_backend import _n_op_diagonal
+
+        n = 3
+        for atom in range(n):
+            diag = _n_op_diagonal(n, atom)
+            for idx in range(2**n):
+                expected = float((idx >> (n - 1 - atom)) & 1)
+                assert diag[idx] == expected
+
+    def test_hamiltonian_sparse_consistent(self) -> None:
+        """Sparse Hamiltonian occupancy extraction uses MSB convention."""
+        pytest.importorskip("scipy")
+        from packages.simulation.hamiltonian import build_hamiltonian_matrix, build_sparse_hamiltonian
+
+        H_dense = build_hamiltonian_matrix([(0.0, 0.0), (7.0, 0.0)], omega=5.0, delta=-10.0)
+        H_sparse = build_sparse_hamiltonian([(0.0, 0.0), (7.0, 0.0)], omega=5.0, delta=-10.0)
+        np.testing.assert_allclose(
+            H_sparse.toarray(),
+            H_dense,
+            atol=1e-10,
+            err_msg="Sparse/dense Hamiltonian mismatch implies bit convention inconsistency",
+        )
+
+    def test_mis_bitstring_convention(self) -> None:
+        """MIS bitstrings: leftmost character = atom 0 = MSB."""
+        from packages.simulation.hamiltonian import find_maximum_independent_sets
+
+        adj = np.array([
+            [False, True, False],
+            [True, False, True],
+            [False, True, False],
+        ])
+        sets = find_maximum_independent_sets(adj)
+        assert [0, 2] in sets
+        bits = ["0"] * 3
+        for idx in [0, 2]:
+            bits[idx] = "1"
+        assert "".join(bits) == "101"
 
 
 # ---- rydberg density ----

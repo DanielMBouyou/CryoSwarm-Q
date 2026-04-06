@@ -204,6 +204,17 @@ class TestPPOComponents:
         m2, s2, v2 = ac2(obs)
         torch.testing.assert_close(m1, m2)
 
+    def test_ppo_save_load_weights_only(self, tmp_path):
+        from packages.ml.ppo import ActorCritic
+
+        model = ActorCritic(obs_dim=OBS_DIM, act_dim=ACT_DIM, hidden=32)
+        path = tmp_path / "weights_only_policy.pt"
+        model.save(path)
+
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
+        assert "model" in checkpoint
+        assert checkpoint["version"] == "ppo_v2"
+
     def test_ppo_short_training(self):
         from packages.ml.ppo import PPOConfig, PPOTrainer
 

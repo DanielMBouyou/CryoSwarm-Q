@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from packages.core.models import ExperimentGoal, RobustnessReport
 from packages.orchestration.pipeline import CryoSwarmPipeline
+
+pytestmark = pytest.mark.integration
 
 
 def _goal() -> ExperimentGoal:

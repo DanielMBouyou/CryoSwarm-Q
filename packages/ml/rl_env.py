@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from packages.core.enums import SequenceFamily
+from packages.core.logging import get_logger
 from packages.core.models import ExperimentSpec, RegisterCandidate, SequenceCandidate
 from packages.core.parameter_space import PhysicsParameterSpace
 
@@ -16,10 +17,21 @@ FAMILY_LIST = list(SequenceFamily)
 OBS_DIM_V1 = 14
 OBS_DIM = 16
 ACT_DIM = 4
+logger = get_logger(__name__)
 
 
 def _active_param_space(param_space: PhysicsParameterSpace | None = None) -> PhysicsParameterSpace:
     return param_space or PhysicsParameterSpace.default()
+
+
+def _action_normalizers(param_space: PhysicsParameterSpace | None = None) -> dict[str, float]:
+    """Return observation normalization scales derived from the RL action ranges."""
+    ranges = _active_param_space(param_space).rl_action_ranges()
+    return {
+        "amplitude": max(float(ranges["amplitude"][1]), 1.0),
+        "detuning": max(abs(float(ranges["detuning"][0])), abs(float(ranges["detuning"][1])), 1.0),
+        "duration_ns": max(float(ranges["duration_ns"][1]), 1.0),
+    }
 
 
 def rescale_action(
@@ -122,6 +134,7 @@ class PulseDesignEnv:
         from packages.ml.dataset import _encode_layout
 
         spacing = float(register.metadata.get("spacing_um", self.param_space.geometry.spacing_um.default))
+        normalizers = _action_normalizers(self.param_space)
         return np.array(
             [
                 float(register.atom_count),
@@ -133,9 +146,9 @@ class PulseDesignEnv:
                 float(self.spec.max_atoms),
                 float(_encode_layout(register.layout_type)),
                 float(self._best_robustness),
-                float(self._best_params.get("amplitude", 0.0)) / 15.0,
-                float(self._best_params.get("detuning", 0.0)) / 30.0,
-                float(self._best_params.get("duration_ns", 0.0)) / 5500.0,
+                float(self._best_params.get("amplitude", 0.0)) / normalizers["amplitude"],
+                float(self._best_params.get("detuning", 0.0)) / normalizers["detuning"],
+                float(self._best_params.get("duration_ns", 0.0)) / normalizers["duration_ns"],
                 float(self._step_count) / max(self.max_steps, 1),
                 float(max(0, self.max_steps - self._step_count)) / max(self.max_steps, 1),
                 float(self._best_nominal),
@@ -150,6 +163,7 @@ class PulseDesignEnv:
 
         pool = self.register_candidates or self._all_register_candidates
         if not pool:
+            logger.warning("Empty register candidate pool; using fallback register state.")
             self._current_register = None
             self._step_count = 0
             self._best_robustness = 0.0
@@ -276,7 +290,12 @@ class PulseDesignEnv:
                 "nominal_score": nominal_score,
                 "observable_score": observable_score,
             }
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "RL candidate evaluation yielded fallback score for register %s: %s",
+                register.id,
+                exc,
+            )
             return 0.0, {
                 "nominal_score": 0.0,
                 "observable_score": 0.0,

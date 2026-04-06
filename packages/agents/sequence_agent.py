@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import cast
+
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName, SequenceFamily
+from packages.core.metadata_schemas import RegisterMetadata
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate, SequenceCandidate
 from packages.core.parameter_space import ParameterRange, PhysicsParameterSpace
 from packages.pasqal_adapters.pulser_adapter import build_simple_sequence_summary
@@ -32,6 +35,7 @@ class SequenceAgent(BaseAgent):
                 memory_records,
             ):
                 duration_ns, amplitude, detuning, phase, waveform_kind, metadata = variant
+                register_metadata = cast(RegisterMetadata, register_candidate.metadata)
                 seq = SequenceCandidate(
                     campaign_id=campaign_id,
                     spec_id=spec.id,
@@ -53,12 +57,20 @@ class SequenceAgent(BaseAgent):
                     metadata={
                         "atom_count": register_candidate.atom_count,
                         "layout_type": register_candidate.layout_type,
-                        "spacing_um": register_candidate.metadata.get("spacing_um"),
+                        "spacing_um": register_metadata.get("spacing_um"),
                         "source": "heuristic",
                         **metadata,
                     },
                 )
-                seq.serialized_pulser_sequence = build_simple_sequence_summary(register_candidate, seq)
+                seq = seq.model_copy(
+                    update={
+                        "serialized_pulser_sequence": build_simple_sequence_summary(
+                            register_candidate,
+                            seq,
+                            param_space=self.param_space,
+                        )
+                    }
+                )
                 candidates.append(seq)
         return candidates
 
@@ -83,6 +95,11 @@ class SequenceAgent(BaseAgent):
             variants = self._global_ramp_variants(duration_offset, exploit_bonus)
 
         if self._family_has_weak_failure(family, memory_records) and len(variants) > 1:
+            self.logger.debug(
+                "Dropped trailing %s variant due to weak failure memory for family %s.",
+                family.value,
+                family.value,
+            )
             variants = variants[:-1]
 
         variants.extend(self._refined_variants_from_memory(family, atom_count, memory_records))
@@ -171,10 +188,6 @@ class SequenceAgent(BaseAgent):
     def _clip_duration(self, parameter_range: ParameterRange, base_duration: float, offset: int) -> int:
         quantized = parameter_range.clip(base_duration)
         return max(16, int(round(quantized + offset)))
-
-    def _family_defaults(self, family: SequenceFamily) -> tuple[ParameterRange, ParameterRange, ParameterRange]:
-        pulse_space = self.param_space.pulse[family]
-        return pulse_space.amplitude, pulse_space.detuning_start, pulse_space.duration_ns
 
     def _adiabatic_variants(
         self,

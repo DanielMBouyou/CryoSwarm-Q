@@ -95,7 +95,7 @@ class ActorCritic(nn.Module if TORCH_AVAILABLE else object):  # type: ignore[mis
 
     @classmethod
     def from_checkpoint(cls, path: str | Path) -> "ActorCritic":
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         config = cls._checkpoint_config(checkpoint)
         model = cls(
             obs_dim=config["obs_dim"],
@@ -158,7 +158,7 @@ class ActorCritic(nn.Module if TORCH_AVAILABLE else object):  # type: ignore[mis
         torch.save(state, str(path))
 
     def load(self, path: str | Path) -> None:
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         if isinstance(checkpoint, dict) and "model" in checkpoint:
             self.load_state_dict(checkpoint["model"])
             return

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from packages.core.enums import AgentName, BackendType, CampaignStatus, CandidateStatus
 from packages.core.models import (
     CampaignState,
@@ -13,6 +15,8 @@ from packages.core.models import (
     SequenceCandidate,
 )
 from packages.orchestration.pipeline import CryoSwarmPipeline
+
+pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 
 class InMemoryRepository:

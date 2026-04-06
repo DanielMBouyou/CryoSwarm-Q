@@ -106,7 +106,7 @@ class SurrogateModel(_NormalizerMixin, nn.Module if TORCH_AVAILABLE else object)
         torch.save(state, str(path))
 
     def load(self, path: str | Path, strict: bool = True) -> None:
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         if isinstance(checkpoint, dict) and "model" in checkpoint:
             self.load_state_dict(checkpoint["model"], strict=strict)
             self._normalizer_means = checkpoint.get("normalizer_means")
@@ -207,7 +207,7 @@ class SurrogateModelV2(_NormalizerMixin, nn.Module if TORCH_AVAILABLE else objec
         torch.save(state, str(path))
 
     def load(self, path: str | Path, strict: bool = True) -> None:
-        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=True)
         if isinstance(checkpoint, dict) and "model" in checkpoint:
             self.load_state_dict(checkpoint["model"], strict=strict)
             self._normalizer_means = checkpoint.get("normalizer_means")

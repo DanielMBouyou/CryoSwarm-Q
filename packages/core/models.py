@@ -31,10 +31,17 @@ FloatDict = dict[str, float]
 
 
 class CryoSwarmModel(BaseModel):
+    """Mutable base model for stateful records that evolve during orchestration."""
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
-class ScoringWeights(CryoSwarmModel):
+class FrozenCryoSwarmModel(CryoSwarmModel):
+    """Immutable base model for validated value objects."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+
+class ScoringWeights(FrozenCryoSwarmModel):
     alpha: float = 0.45
     beta: float = 0.35
     gamma: float = 0.10
@@ -75,7 +82,7 @@ class ExperimentGoalCreate(CryoSwarmModel):
     metadata: JsonDict = Field(default_factory=dict)
 
 
-class ExperimentSpec(CryoSwarmModel):
+class ExperimentSpec(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("spec"))
     goal_id: str
     objective_class: str
@@ -84,7 +91,13 @@ class ExperimentSpec(CryoSwarmModel):
     max_atoms: int = Field(ge=2, le=50)
     preferred_layouts: list[str]
     sequence_families: list[SequenceFamily]
-    target_density: float = 0.5
+    target_density: float = Field(
+        default=0.5,
+        description=(
+            "Expected final-state Rydberg excitation density used by evaluators to score "
+            "alignment between observed and target populations."
+        ),
+    )
     scoring_weights: ScoringWeights = Field(default_factory=ScoringWeights)
     perturbation_budget: int = 3
     latency_budget: float = 0.30
@@ -99,7 +112,7 @@ class ExperimentSpec(CryoSwarmModel):
         return self
 
 
-class RegisterCandidate(CryoSwarmModel):
+class RegisterCandidate(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("reg"))
     campaign_id: str
     spec_id: str
@@ -120,7 +133,7 @@ class RegisterCandidate(CryoSwarmModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class SequenceCandidate(CryoSwarmModel):
+class SequenceCandidate(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("seq"))
     campaign_id: str
     spec_id: str
@@ -155,7 +168,7 @@ class NoiseScenario(CryoSwarmModel):
     metadata: JsonDict = Field(default_factory=dict)
 
 
-class RobustnessReport(CryoSwarmModel):
+class RobustnessReport(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("robust"))
     campaign_id: str
     sequence_candidate_id: str
@@ -175,7 +188,7 @@ class RobustnessReport(CryoSwarmModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class BackendChoice(CryoSwarmModel):
+class BackendChoice(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("backend"))
     campaign_id: str
     sequence_candidate_id: str
@@ -188,7 +201,7 @@ class BackendChoice(CryoSwarmModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class AgentDecision(CryoSwarmModel):
+class AgentDecision(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("decision"))
     campaign_id: str
     agent_name: AgentName
@@ -201,7 +214,7 @@ class AgentDecision(CryoSwarmModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class EvaluationResult(CryoSwarmModel):
+class EvaluationResult(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("eval"))
     campaign_id: str
     sequence_candidate_id: str
@@ -221,7 +234,7 @@ class EvaluationResult(CryoSwarmModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
-class MemoryRecord(CryoSwarmModel):
+class MemoryRecord(FrozenCryoSwarmModel):
     id: str = Field(default_factory=lambda: make_id("memory"))
     campaign_id: str
     source_candidate_id: str

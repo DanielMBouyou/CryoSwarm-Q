@@ -1,4 +1,8 @@
+import pytest
+
 from packages.pasqal_adapters.pulser_adapter import summarize_register_physics
+
+pytestmark = pytest.mark.pulser
 
 
 def test_register_physics_summary_detects_valid_spacing() -> None:

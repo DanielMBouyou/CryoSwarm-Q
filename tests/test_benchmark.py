@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from scripts.benchmark import (
     compute_pipeline_benchmark,
     compute_rl_benchmark,
     compute_surrogate_benchmark,
 )
+
+pytestmark = pytest.mark.slow
 
 
 def test_compute_surrogate_benchmark_shapes():
