@@ -274,3 +274,5 @@ class PipelineSummary(CryoSwarmModel):
     decisions: list[AgentDecision] = Field(default_factory=list)
     robustness_reports: list[RobustnessReport] = Field(default_factory=list)
     memory_records: list[MemoryRecord] = Field(default_factory=list)
+    registers: list[RegisterCandidate] = Field(default_factory=list)
+    sequences: list[SequenceCandidate] = Field(default_factory=list)

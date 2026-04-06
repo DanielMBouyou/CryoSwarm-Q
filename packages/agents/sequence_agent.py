@@ -3,19 +3,18 @@ from __future__ import annotations
 from packages.agents.base import BaseAgent
 from packages.core.enums import AgentName, SequenceFamily
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate, SequenceCandidate
+from packages.core.parameter_space import ParameterRange, PhysicsParameterSpace
 from packages.pasqal_adapters.pulser_adapter import build_simple_sequence_summary
 
 
 class SequenceAgent(BaseAgent):
-    """Generate pulse-sequence candidates with physically realistic parameters.
-
-    All amplitudes are Rabi frequencies in rad/us compatible with
-    ``AnalogDevice`` (max ~15.7 rad/us). Detunings sweep through the
-    interaction energy scale so that the system crosses the quantum phase
-    transition between disordered and ordered Rydberg phases.
-    """
+    """Generate pulse-sequence candidates with physically realistic parameters."""
 
     agent_name = AgentName.SEQUENCE
+
+    def __init__(self, param_space: PhysicsParameterSpace | None = None) -> None:
+        super().__init__()
+        self.param_space = param_space or PhysicsParameterSpace.default()
 
     def run(
         self,
@@ -33,10 +32,6 @@ class SequenceAgent(BaseAgent):
                 memory_records,
             ):
                 duration_ns, amplitude, detuning, phase, waveform_kind, metadata = variant
-                predicted_cost = round(
-                    min(1.0, (2**register_candidate.atom_count) * duration_ns / 500000.0),
-                    4,
-                )
                 seq = SequenceCandidate(
                     campaign_id=campaign_id,
                     spec_id=spec.id,
@@ -49,7 +44,7 @@ class SequenceAgent(BaseAgent):
                     detuning=detuning,
                     phase=phase,
                     waveform_kind=waveform_kind,
-                    predicted_cost=predicted_cost,
+                    predicted_cost=self.param_space.cost_for(register_candidate.atom_count, duration_ns),
                     reasoning_summary=(
                         f"Generated a {family.value} pulse ({waveform_kind}) "
                         f"with Omega={amplitude:.1f} rad/us, delta={detuning:.1f} rad/us, "
@@ -59,13 +54,11 @@ class SequenceAgent(BaseAgent):
                         "atom_count": register_candidate.atom_count,
                         "layout_type": register_candidate.layout_type,
                         "spacing_um": register_candidate.metadata.get("spacing_um"),
+                        "source": "heuristic",
                         **metadata,
                     },
                 )
-                seq.serialized_pulser_sequence = build_simple_sequence_summary(
-                    register_candidate,
-                    seq,
-                )
+                seq.serialized_pulser_sequence = build_simple_sequence_summary(register_candidate, seq)
                 candidates.append(seq)
         return candidates
 
@@ -76,7 +69,7 @@ class SequenceAgent(BaseAgent):
         memory_records: list[MemoryRecord],
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
         exploit_bonus = any("strong" in record.reusable_tags for record in memory_records)
-        duration_offset = atom_count * 150
+        duration_offset = self.param_space.duration_offset(atom_count)
 
         if family == SequenceFamily.ADIABATIC_SWEEP:
             variants = self._adiabatic_variants(duration_offset, exploit_bonus)
@@ -125,8 +118,14 @@ class SequenceAgent(BaseAgent):
         if not matching_records:
             return []
 
+        pulse_space = self.param_space.pulse[family]
         best_record = max(matching_records, key=lambda item: float(item.signals.get("confidence", 0.0)))
-        base_duration = int(best_record.signals.get("duration_ns", 2000 + atom_count * 150))
+        base_duration = int(
+            best_record.signals.get(
+                "duration_ns",
+                pulse_space.duration_ns.default + self.param_space.duration_offset(atom_count),
+            )
+        )
         base_amplitude = float(best_record.signals["amplitude"])
         base_detuning = float(best_record.signals["detuning"])
 
@@ -134,10 +133,10 @@ class SequenceAgent(BaseAgent):
         for label_suffix, scale in (("minus", 0.9), ("plus", 1.1)):
             refined.append(
                 (
-                    max(16, base_duration),
-                    round(max(0.0, min(15.8, base_amplitude * scale)), 4),
-                    round(max(-126.0, min(126.0, base_detuning * scale)), 4),
-                    0.0,
+                    self._clip_duration(pulse_space.duration_ns, base_duration, 0),
+                    self._clip_value(pulse_space.amplitude, base_amplitude * scale),
+                    self._clip_value(pulse_space.detuning_start, base_detuning * scale),
+                    pulse_space.phase.default,
                     f"refined_memory_{label_suffix}",
                     self._memory_metadata(family, base_amplitude, base_detuning),
                 )
@@ -150,183 +149,210 @@ class SequenceAgent(BaseAgent):
         amplitude: float,
         detuning: float,
     ) -> dict[str, float]:
-        if family == SequenceFamily.GLOBAL_RAMP:
-            return {"amplitude_start": round(max(0.2, amplitude * 0.15), 4)}
-        if family == SequenceFamily.DETUNING_SCAN:
-            return {"detuning_end": round(-detuning * 0.35 if detuning else 5.0, 4)}
-        if family == SequenceFamily.BLACKMAN_SWEEP:
-            return {"detuning_end": round(-detuning * 0.45 if detuning else 8.0, 4)}
+        pulse_space = self.param_space.pulse[family]
+        if family == SequenceFamily.GLOBAL_RAMP and pulse_space.amplitude_start is not None:
+            return {"amplitude_start": self._clip_value(pulse_space.amplitude_start, max(0.2, amplitude * 0.15))}
+        if family == SequenceFamily.DETUNING_SCAN and pulse_space.detuning_end is not None:
+            return {"detuning_end": self._clip_value(pulse_space.detuning_end, -detuning * 0.35 if detuning else 5.0)}
+        if family == SequenceFamily.BLACKMAN_SWEEP and pulse_space.detuning_end is not None:
+            return {"detuning_end": self._clip_value(pulse_space.detuning_end, -detuning * 0.45 if detuning else 8.0)}
         if family == SequenceFamily.ADIABATIC_SWEEP:
-            return {
-                "amplitude_start": round(max(0.2, amplitude * 0.12), 4),
-                "detuning_end": round(-detuning * 0.5 if detuning else 10.0, 4),
-            }
+            metadata: dict[str, float] = {}
+            if pulse_space.amplitude_start is not None:
+                metadata["amplitude_start"] = self._clip_value(pulse_space.amplitude_start, max(0.2, amplitude * 0.12))
+            if pulse_space.detuning_end is not None:
+                metadata["detuning_end"] = self._clip_value(pulse_space.detuning_end, -detuning * 0.5 if detuning else 10.0)
+            return metadata
         return {}
 
-    @staticmethod
+    def _clip_value(self, parameter_range: ParameterRange, value: float) -> float:
+        return round(parameter_range.clip(value), 4)
+
+    def _clip_duration(self, parameter_range: ParameterRange, base_duration: float, offset: int) -> int:
+        quantized = parameter_range.clip(base_duration)
+        return max(16, int(round(quantized + offset)))
+
+    def _family_defaults(self, family: SequenceFamily) -> tuple[ParameterRange, ParameterRange, ParameterRange]:
+        pulse_space = self.param_space.pulse[family]
+        return pulse_space.amplitude, pulse_space.detuning_start, pulse_space.duration_ns
+
     def _adiabatic_variants(
-        offset: int, exploit: bool
+        self,
+        offset: int,
+        exploit: bool,
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
-        """Sweep detuning through the phase transition with an adiabatic protocol."""
-        variants: list[tuple[int, float, float, float, str, dict[str, float]]] = [
+        pulse_space = self.param_space.pulse[SequenceFamily.ADIABATIC_SWEEP]
+        variants = [
             (
-                3000 + offset,
-                5.0,
-                -20.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default),
+                pulse_space.phase.default,
                 "adiabatic_conservative",
-                {"amplitude_start": 0.5, "detuning_end": 10.0},
+                {
+                    "amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default),  # type: ignore[arg-type]
+                    "detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default),  # type: ignore[arg-type]
+                },
             ),
             (
-                4000 + offset,
-                7.5,
-                -25.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 1000.0, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * 1.5),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.25),
+                pulse_space.phase.default,
                 "adiabatic_extended",
-                {"amplitude_start": 0.8, "detuning_end": 15.0},
+                {
+                    "amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default * 1.6),  # type: ignore[arg-type]
+                    "detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 1.5),  # type: ignore[arg-type]
+                },
             ),
         ]
         if exploit:
             variants.append(
                 (
-                    3500 + offset,
-                    6.0,
-                    -22.0,
-                    0.0,
+                    self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 500.0, offset),
+                    self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * 1.2),
+                    self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.1),
+                    pulse_space.phase.default,
                     "adiabatic_memory",
-                    {"amplitude_start": 0.6, "detuning_end": 12.0},
+                    {
+                        "amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default * 1.2),  # type: ignore[arg-type]
+                        "detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 1.2),  # type: ignore[arg-type]
+                    },
                 )
             )
         return variants
 
-    @staticmethod
     def _detuning_scan_variants(
-        offset: int, exploit: bool
+        self,
+        offset: int,
+        exploit: bool,
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
-        """Constant amplitude with a detuning ramp to probe the phase diagram."""
-        variants: list[tuple[int, float, float, float, str, dict[str, float]]] = [
+        pulse_space = self.param_space.pulse[SequenceFamily.DETUNING_SCAN]
+        variants = [
             (
-                2000 + offset,
-                4.0,
-                -15.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default),
+                pulse_space.phase.default,
                 "detuning_scan_fast",
-                {"detuning_end": 5.0},
+                {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default)},  # type: ignore[arg-type]
             ),
             (
-                3000 + offset,
-                6.0,
-                -20.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 1000.0, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * 1.5),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * (4.0 / 3.0)),
+                pulse_space.phase.default,
                 "detuning_scan_wide",
-                {"detuning_end": 10.0},
+                {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 2.0)},  # type: ignore[arg-type]
             ),
         ]
         if exploit:
             variants.append(
                 (
-                    2500 + offset,
-                    5.0,
-                    -18.0,
-                    0.0,
+                    self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 500.0, offset),
+                    self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * 1.25),
+                    self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.2),
+                    pulse_space.phase.default,
                     "detuning_scan_memory",
-                    {"detuning_end": 8.0},
+                    {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 1.6)},  # type: ignore[arg-type]
                 )
             )
         return variants
 
-    @staticmethod
     def _global_ramp_variants(
-        offset: int, exploit: bool
+        self,
+        offset: int,
+        exploit: bool,
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
-        """Ramp amplitude first, then sweep detuning across the ordered regime."""
-        variants: list[tuple[int, float, float, float, str, dict[str, float]]] = [
+        pulse_space = self.param_space.pulse[SequenceFamily.GLOBAL_RAMP]
+        variants = [
             (
-                2000 + offset,
-                6.0,
-                -12.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default),
+                pulse_space.phase.default,
                 "global_ramp_compact",
-                {"amplitude_start": 0.5},
+                {"amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default)},  # type: ignore[arg-type]
             ),
             (
-                3000 + offset,
-                8.0,
-                -18.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 1000.0, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * (4.0 / 3.0)),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.5),
+                pulse_space.phase.default,
                 "global_ramp_extended",
-                {"amplitude_start": 1.0},
+                {"amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default * 2.0)},  # type: ignore[arg-type]
             ),
         ]
         if exploit:
             variants.append(
                 (
-                    2500 + offset,
-                    7.0,
-                    -15.0,
-                    0.0,
+                    self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 500.0, offset),
+                    self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default * (7.0 / 6.0)),
+                    self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.25),
+                    pulse_space.phase.default,
                     "global_ramp_memory",
-                    {"amplitude_start": 0.8},
+                    {"amplitude_start": self._clip_value(pulse_space.amplitude_start, pulse_space.amplitude_start.default * 1.6)},  # type: ignore[arg-type]
                 )
             )
         return variants
 
-    @staticmethod
     def _constant_drive_variants(
+        self,
         offset: int,
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
-        """Constant Omega and delta for Rabi oscillations and calibration-style runs."""
+        pulse_space = self.param_space.pulse[SequenceFamily.CONSTANT_DRIVE]
         return [
             (
-                1200 + offset,
-                5.0,
-                0.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default),
+                pulse_space.phase.default,
                 "constant_resonant",
                 {},
             ),
             (
-                1500 + offset,
-                5.0,
-                -5.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 300.0, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.min_val * 0.5),
+                pulse_space.phase.default,
                 "constant_detuned",
                 {},
             ),
         ]
 
-    @staticmethod
     def _blackman_sweep_variants(
-        offset: int, exploit: bool
+        self,
+        offset: int,
+        exploit: bool,
     ) -> list[tuple[int, float, float, float, str, dict[str, float]]]:
-        """Blackman-envelope sweeps that suppress leakage during the ramp."""
-        variants: list[tuple[int, float, float, float, str, dict[str, float]]] = [
+        pulse_space = self.param_space.pulse[SequenceFamily.BLACKMAN_SWEEP]
+        variants = [
             (
-                3000 + offset,
-                7.0,
-                -20.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default),
+                pulse_space.phase.default,
                 "blackman_sweep_standard",
-                {"detuning_end": 10.0},
+                {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default)},  # type: ignore[arg-type]
             ),
             (
-                4000 + offset,
-                8.5,
-                -30.0,
-                0.0,
+                self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 1000.0, offset),
+                self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default + 1.5),
+                self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.5),
+                pulse_space.phase.default,
                 "blackman_sweep_wide",
-                {"detuning_end": 15.0},
+                {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 1.5)},  # type: ignore[arg-type]
             ),
         ]
         if exploit:
             variants.append(
                 (
-                    3500 + offset,
-                    7.5,
-                    -25.0,
-                    0.0,
+                    self._clip_duration(pulse_space.duration_ns, pulse_space.duration_ns.default + 500.0, offset),
+                    self._clip_value(pulse_space.amplitude, pulse_space.amplitude.default + 0.5),
+                    self._clip_value(pulse_space.detuning_start, pulse_space.detuning_start.default * 1.25),
+                    pulse_space.phase.default,
                     "blackman_sweep_memory",
-                    {"detuning_end": 12.0},
+                    {"detuning_end": self._clip_value(pulse_space.detuning_end, pulse_space.detuning_end.default * 1.2)},  # type: ignore[arg-type]
                 )
             )
         return variants

@@ -2,49 +2,41 @@ from __future__ import annotations
 
 from packages.core.enums import NoiseLevel
 from packages.core.models import NoiseScenario
+from packages.core.parameter_space import PhysicsParameterSpace
 
 
-def low_noise() -> NoiseScenario:
-    return NoiseScenario(
-        label=NoiseLevel.LOW,
-        amplitude_jitter=0.03,
-        detuning_jitter=0.02,
-        dephasing_rate=0.03,
-        atom_loss_rate=0.01,
-        temperature_uk=30.0,
-        state_prep_error=0.003,
-        false_positive_rate=0.008,
-        false_negative_rate=0.02,
-    )
+def _with_spatial_default(
+    scenario: NoiseScenario,
+    level: NoiseLevel,
+) -> NoiseScenario:
+    defaults = {
+        NoiseLevel.LOW: 0.02,
+        NoiseLevel.MEDIUM: 0.05,
+        NoiseLevel.STRESSED: 0.08,
+    }
+    metadata = dict(scenario.metadata)
+    metadata.setdefault("spatial_inhomogeneity", defaults[level])
+    return scenario.model_copy(update={"metadata": metadata})
 
 
-def medium_noise() -> NoiseScenario:
-    return NoiseScenario(
-        label=NoiseLevel.MEDIUM,
-        amplitude_jitter=0.06,
-        detuning_jitter=0.05,
-        dephasing_rate=0.07,
-        atom_loss_rate=0.03,
-        temperature_uk=50.0,
-        state_prep_error=0.005,
-        false_positive_rate=0.01,
-        false_negative_rate=0.05,
-    )
+def low_noise(param_space: PhysicsParameterSpace | None = None) -> NoiseScenario:
+    base = (param_space or PhysicsParameterSpace.default()).noise_profile(NoiseLevel.LOW)
+    return _with_spatial_default(base, NoiseLevel.LOW)
 
 
-def stressed_noise() -> NoiseScenario:
-    return NoiseScenario(
-        label=NoiseLevel.STRESSED,
-        amplitude_jitter=0.10,
-        detuning_jitter=0.08,
-        dephasing_rate=0.11,
-        atom_loss_rate=0.05,
-        temperature_uk=75.0,
-        state_prep_error=0.01,
-        false_positive_rate=0.02,
-        false_negative_rate=0.08,
-    )
+def medium_noise(param_space: PhysicsParameterSpace | None = None) -> NoiseScenario:
+    base = (param_space or PhysicsParameterSpace.default()).noise_profile(NoiseLevel.MEDIUM)
+    return _with_spatial_default(base, NoiseLevel.MEDIUM)
 
 
-def default_noise_scenarios() -> list[NoiseScenario]:
-    return [low_noise(), medium_noise(), stressed_noise()]
+def stressed_noise(param_space: PhysicsParameterSpace | None = None) -> NoiseScenario:
+    base = (param_space or PhysicsParameterSpace.default()).noise_profile(NoiseLevel.STRESSED)
+    return _with_spatial_default(base, NoiseLevel.STRESSED)
+
+
+def default_noise_scenarios(param_space: PhysicsParameterSpace | None = None) -> list[NoiseScenario]:
+    return [
+        low_noise(param_space),
+        medium_noise(param_space),
+        stressed_noise(param_space),
+    ]
