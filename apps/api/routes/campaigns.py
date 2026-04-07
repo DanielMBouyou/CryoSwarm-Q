@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 
 from apps.api.auth import verify_api_key
 from apps.api.dependencies import get_repository
@@ -9,6 +10,7 @@ from packages.core.enums import AppEnvironment
 from packages.core.logging import get_logger
 from packages.core.models import CampaignState, DemoGoalRequest, PipelineSummary
 from packages.db.repositories import CryoSwarmRepository
+from packages.orchestration.events import EventBus
 from packages.orchestration.runner import run_demo_campaign
 
 
@@ -21,12 +23,23 @@ logger = get_logger(__name__)
     response_model=PipelineSummary,
     dependencies=[Depends(verify_api_key)],
 )
-def run_demo(
+async def run_demo(
+    request: Request,
     payload: DemoGoalRequest | None = None,
     repository: CryoSwarmRepository = Depends(get_repository),
 ) -> PipelineSummary:
+    event_bus = EventBus()
+    broadcaster = getattr(request.app.state, "event_broadcaster", None)
+    if broadcaster is not None:
+        event_bus.subscribe("*", broadcaster.publish)
+
     try:
-        return run_demo_campaign(request=payload or DemoGoalRequest(), repository=repository)
+        return await run_in_threadpool(
+            run_demo_campaign,
+            request=payload or DemoGoalRequest(),
+            repository=repository,
+            event_bus=event_bus,
+        )
     except Exception as exc:
         logger.error("Demo campaign failed: %s", exc, exc_info=True)
         settings = get_settings()

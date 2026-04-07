@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from packages.core.models import ScoringWeights
+from packages.scoring.robustness import clamp_score
 
 
 DEFAULT_WEIGHTS = ScoringWeights()
@@ -20,4 +21,4 @@ def compute_objective_score(
         - active_weights.gamma * cost
         - active_weights.delta * latency
     )
-    return round(score, 4)
+    return clamp_score(score)

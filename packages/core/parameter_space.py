@@ -292,6 +292,34 @@ class ScoringParameterSpace:
         )
 
 
+@dataclass(frozen=True)
+class RobustnessWeightConfig:
+    """Resolved robustness weighting after applying goal-level constraints."""
+
+    nominal_weight: float
+    average_weight: float
+    worst_case_weight: float
+    stability_weight: float
+    stability_std_threshold: float
+    smoothing: float
+    source: str
+    profile: str
+    target_weights: dict[str, float]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "nominal_weight": round(self.nominal_weight, 6),
+            "average_weight": round(self.average_weight, 6),
+            "worst_case_weight": round(self.worst_case_weight, 6),
+            "stability_weight": round(self.stability_weight, 6),
+            "stability_std_threshold": round(self.stability_std_threshold, 6),
+            "smoothing": round(self.smoothing, 6),
+            "source": self.source,
+            "profile": self.profile,
+            "target_weights": {key: round(value, 6) for key, value in self.target_weights.items()},
+        }
+
+
 @dataclass
 class PhysicsParameterSpace:
     """Master parameter space aggregating all sub-spaces."""
@@ -541,6 +569,114 @@ class PhysicsParameterSpace:
                 (self.cost_base_exponent.default**atom_count) * duration_ns / self.cost_normalization.default,
             ),
             4,
+        )
+
+    def default_robustness_weights(self) -> dict[str, float]:
+        return {
+            "nominal_weight": float(self.scoring.nominal_weight.default),
+            "average_weight": float(self.scoring.average_weight.default),
+            "worst_case_weight": float(self.scoring.worst_case_weight.default),
+            "stability_weight": float(self.scoring.stability_weight.default),
+        }
+
+    def resolve_robustness_weight_config(
+        self,
+        constraints: dict[str, Any] | None = None,
+    ) -> RobustnessWeightConfig:
+        merged_constraints: dict[str, Any] = dict(constraints or {})
+        nested_scoring = merged_constraints.get("scoring")
+        if isinstance(nested_scoring, dict):
+            merged_constraints = {**merged_constraints, **nested_scoring}
+
+        defaults = self.default_robustness_weights()
+        profile = str(merged_constraints.get("robustness_profile", "default")).strip().lower() or "default"
+        target_profiles: dict[str, dict[str, float]] = {
+            "default": defaults,
+            "balanced": defaults,
+            "nominal_fidelity": {
+                "nominal_weight": 0.36,
+                "average_weight": 0.30,
+                "worst_case_weight": 0.24,
+                "stability_weight": 0.10,
+            },
+            "noise_hardening": {
+                "nominal_weight": 0.18,
+                "average_weight": 0.34,
+                "worst_case_weight": 0.34,
+                "stability_weight": 0.14,
+            },
+            "worst_case_safety": {
+                "nominal_weight": 0.15,
+                "average_weight": 0.25,
+                "worst_case_weight": 0.45,
+                "stability_weight": 0.15,
+            },
+            "stability_first": {
+                "nominal_weight": 0.20,
+                "average_weight": 0.25,
+                "worst_case_weight": 0.35,
+                "stability_weight": 0.20,
+            },
+        }
+
+        target_weights = dict(target_profiles.get(profile, defaults))
+        explicit_weights = merged_constraints.get("robustness_weights")
+        source = "default"
+        if profile in target_profiles and profile not in {"default", "balanced"}:
+            source = "profile"
+
+        weight_ranges = {
+            "nominal_weight": self.scoring.nominal_weight,
+            "average_weight": self.scoring.average_weight,
+            "worst_case_weight": self.scoring.worst_case_weight,
+            "stability_weight": self.scoring.stability_weight,
+        }
+
+        if isinstance(explicit_weights, dict):
+            for key, value in explicit_weights.items():
+                if key in weight_ranges:
+                    target_weights[key] = weight_ranges[key].clip(float(value))
+            source = "custom" if source == "default" else "profile+custom"
+
+        total_target = float(sum(max(value, 0.0) for value in target_weights.values()))
+        if total_target <= 1e-8:
+            target_weights = dict(defaults)
+        else:
+            target_weights = {
+                key: max(float(value), 0.0) / total_target
+                for key, value in target_weights.items()
+            }
+
+        smoothing_default = 0.4 if source != "default" else 0.0
+        smoothing = float(merged_constraints.get("robustness_weight_smoothing", smoothing_default))
+        smoothing = float(np.clip(smoothing, 0.0, 1.0))
+
+        resolved = {
+            key: (1.0 - smoothing) * defaults[key] + smoothing * target_weights[key]
+            for key in defaults
+        }
+        resolved_sum = float(sum(resolved.values()))
+        if resolved_sum <= 1e-8:
+            resolved = dict(defaults)
+        else:
+            resolved = {key: value / resolved_sum for key, value in resolved.items()}
+
+        stability_std_threshold = self.scoring.stability_std_threshold.default
+        if "stability_std_threshold" in merged_constraints:
+            stability_std_threshold = self.scoring.stability_std_threshold.clip(
+                float(merged_constraints["stability_std_threshold"])
+            )
+
+        return RobustnessWeightConfig(
+            nominal_weight=float(resolved["nominal_weight"]),
+            average_weight=float(resolved["average_weight"]),
+            worst_case_weight=float(resolved["worst_case_weight"]),
+            stability_weight=float(resolved["stability_weight"]),
+            stability_std_threshold=float(stability_std_threshold),
+            smoothing=smoothing,
+            source=source,
+            profile=profile,
+            target_weights={key: float(value) for key, value in target_weights.items()},
         )
 
     def rl_action_ranges(self) -> dict[str, tuple[float, float]]:

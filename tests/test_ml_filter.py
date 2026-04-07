@@ -87,6 +87,15 @@ class TestSurrogateFilterPassthrough:
         result = filt.filter([], {})
         assert result == []
 
+    def test_filter_with_report_in_passthrough_mode(self):
+        filt = SurrogateFilter(enabled=False)
+        reg = _make_register()
+        seqs = _make_sequences(reg.id, 4)
+        filtered, report = filt.filter_with_report(seqs, {reg.id: reg})
+        assert len(filtered) == 4
+        assert report["applied"] is False
+        assert report["reason"] == "disabled"
+
 
 @pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch not installed")
 class TestSurrogateFilterWithModel:

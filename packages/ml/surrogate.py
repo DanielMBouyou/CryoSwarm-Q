@@ -1,6 +1,7 @@
 """Phase 1 - Surrogate models, trainers, and uncertainty-aware ensembles."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,94 @@ def _as_numpy_row(features: Any) -> NDArray[np.float32]:
     if TORCH_AVAILABLE and isinstance(features, torch.Tensor):
         return features.detach().cpu().numpy().astype(np.float32, copy=False)
     return np.asarray(features, dtype=np.float32)
+
+
+def _dataset_targets(dataset: Any) -> NDArray[np.float32]:
+    if len(dataset) == 0:
+        return np.empty((0, OUTPUT_DIM), dtype=np.float32)
+    return np.stack([_as_numpy_row(dataset[index][1]) for index in range(len(dataset))]).astype(
+        np.float32,
+        copy=False,
+    )
+
+
+def _build_stratification_labels(
+    targets: NDArray[np.float32],
+    n_bins: int,
+) -> NDArray[np.int64]:
+    if targets.size == 0:
+        return np.empty(0, dtype=np.int64)
+
+    robustness = np.asarray(targets[:, 0], dtype=np.float32)
+    if robustness.size <= 1:
+        return np.zeros(robustness.size, dtype=np.int64)
+
+    bin_count = int(max(2, min(n_bins, robustness.size)))
+    quantiles = np.linspace(0.0, 1.0, num=bin_count + 1, dtype=np.float32)[1:-1]
+    if quantiles.size == 0:
+        return np.zeros(robustness.size, dtype=np.int64)
+
+    edges = np.unique(np.quantile(robustness, quantiles))
+    if edges.size == 0:
+        return np.zeros(robustness.size, dtype=np.int64)
+
+    return np.digitize(robustness, edges, right=False).astype(np.int64, copy=False)
+
+
+def _build_stratified_folds(
+    labels: NDArray[np.int64],
+    k_folds: int,
+    seed: int,
+) -> list[list[int]]:
+    rng = np.random.default_rng(seed)
+    folds: list[list[int]] = [[] for _ in range(k_folds)]
+
+    for label in np.unique(labels):
+        label_indices = np.flatnonzero(labels == label)
+        rng.shuffle(label_indices)
+        for offset, sample_index in enumerate(label_indices.tolist()):
+            folds[offset % k_folds].append(int(sample_index))
+
+    if any(len(fold) == 0 for fold in folds):
+        shuffled = np.arange(labels.size, dtype=np.int64)
+        rng.shuffle(shuffled)
+        return [chunk.astype(int).tolist() for chunk in np.array_split(shuffled, k_folds) if len(chunk) > 0]
+
+    return [sorted(fold) for fold in folds]
+
+
+def _rankdata(values: NDArray[np.float32]) -> NDArray[np.float32]:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(values.shape[0], dtype=np.float32)
+    ranks[order] = np.arange(values.shape[0], dtype=np.float32)
+    return ranks
+
+
+def _safe_rank_correlation(
+    x: NDArray[np.float32],
+    y: NDArray[np.float32],
+) -> float:
+    if x.size < 2 or y.size < 2:
+        return 0.0
+    x_ranks = _rankdata(np.asarray(x, dtype=np.float32))
+    y_ranks = _rankdata(np.asarray(y, dtype=np.float32))
+    if np.allclose(x_ranks.std(), 0.0) or np.allclose(y_ranks.std(), 0.0):
+        return 0.0
+    corr = np.corrcoef(x_ranks, y_ranks)[0, 1]
+    return float(0.0 if np.isnan(corr) else corr)
+
+
+@dataclass(frozen=True)
+class EnsembleCalibrationFold:
+    fold_index: int
+    train_size: int
+    val_size: int
+    robustness_mae: float
+    robustness_rmse: float
+    mean_uncertainty: float
+    one_sigma_coverage: float
+    uncertainty_error_rank_corr: float
+    calibration_error: float
 
 
 class _NormalizerMixin:
@@ -353,12 +442,15 @@ class SurrogateTrainer:
             val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size)
 
         history: dict[str, list[float]] = {"train_loss": [], "val_loss": []}
+        device = next(self.model.parameters()).device
 
         for epoch in range(epochs):
             self.model.train()
             epoch_loss = 0.0
             n_batches = 0
             for features, targets in train_loader:
+                features = features.to(device)
+                targets = targets.to(device)
                 self.optimizer.zero_grad()
                 preds = self.model(features.float())
                 loss = self._weighted_mse(preds, targets.float())
@@ -377,6 +469,8 @@ class SurrogateTrainer:
                 n_val = 0
                 with torch.no_grad():
                     for features, targets in val_loader:
+                        features = features.to(device)
+                        targets = targets.to(device)
                         preds = self.model(features.float())
                         val_loss += float(self._weighted_mse(preds, targets.float()).item())
                         n_val += 1
@@ -406,6 +500,9 @@ class EnsembleTrainer:
         weight_decay: float = 1e-5,
         target_weights: list[float] | None = None,
         bootstrap: bool = False,
+        k_folds: int = 0,
+        stratify_bins: int = 5,
+        cv_seed: int = 42,
     ) -> None:
         _check_torch()
         self.ensemble = ensemble
@@ -413,8 +510,16 @@ class EnsembleTrainer:
         self.weight_decay = weight_decay
         self.target_weights = target_weights
         self.bootstrap = bootstrap
+        self.k_folds = k_folds
+        self.stratify_bins = stratify_bins
+        self.cv_seed = cv_seed
+        self.last_cv_report: dict[str, Any] = {
+            "enabled": False,
+            "k_folds": 0,
+            "reason": "cross_validation_not_run",
+        }
 
-    def fit(
+    def _fit_members(
         self,
         train_dataset: torch.utils.data.Dataset,
         val_dataset: torch.utils.data.Dataset | None = None,
@@ -446,3 +551,155 @@ class EnsembleTrainer:
             )
             histories.append(history)
         return histories
+
+    def _fresh_ensemble(self) -> SurrogateEnsemble:
+        return SurrogateEnsemble(
+            n_models=self.ensemble.n_models,
+            model_class=self.ensemble.model_class,
+            **self.ensemble.model_kwargs,
+        )
+
+    def cross_validate(
+        self,
+        dataset: torch.utils.data.Dataset,
+        epochs: int = 200,
+        batch_size: int = 64,
+    ) -> dict[str, Any]:
+        sample_count = len(dataset)
+        effective_folds = min(max(self.k_folds, 0), sample_count)
+        if effective_folds < 2:
+            return {
+                "enabled": False,
+                "k_folds": effective_folds,
+                "n_samples": sample_count,
+                "reason": "insufficient_samples_for_kfold",
+            }
+
+        targets = _dataset_targets(dataset)
+        labels = _build_stratification_labels(targets, self.stratify_bins)
+        folds = _build_stratified_folds(labels, effective_folds, self.cv_seed)
+
+        fold_reports: list[EnsembleCalibrationFold] = []
+        all_errors: list[NDArray[np.float32]] = []
+        all_uncertainties: list[NDArray[np.float32]] = []
+
+        for fold_index, val_indices in enumerate(folds):
+            val_index_set = set(val_indices)
+            train_indices = [index for index in range(sample_count) if index not in val_index_set]
+            if not train_indices or not val_indices:
+                continue
+
+            fold_ensemble = self._fresh_ensemble()
+            fold_trainer = EnsembleTrainer(
+                fold_ensemble,
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+                target_weights=self.target_weights,
+                bootstrap=self.bootstrap,
+                k_folds=0,
+                stratify_bins=self.stratify_bins,
+                cv_seed=self.cv_seed,
+            )
+            fold_trainer._fit_members(
+                torch.utils.data.Subset(dataset, train_indices),
+                epochs=epochs,
+                batch_size=batch_size,
+                log_dir=None,
+            )
+
+            val_features = np.stack(
+                [_as_numpy_row(dataset[index][0]) for index in val_indices],
+            ).astype(np.float32, copy=False)
+            val_targets = targets[np.asarray(val_indices, dtype=np.int64)]
+            mean_preds, uncertainty = fold_ensemble.predict_with_uncertainty(val_features)
+            errors = np.abs(mean_preds[:, 0] - val_targets[:, 0]).astype(np.float32, copy=False)
+            uncertainty_robustness = uncertainty[:, 0].astype(np.float32, copy=False)
+
+            fold_reports.append(
+                EnsembleCalibrationFold(
+                    fold_index=fold_index,
+                    train_size=len(train_indices),
+                    val_size=len(val_indices),
+                    robustness_mae=float(np.mean(errors)),
+                    robustness_rmse=float(np.sqrt(np.mean(np.square(errors)))),
+                    mean_uncertainty=float(np.mean(uncertainty_robustness)),
+                    one_sigma_coverage=float(np.mean(errors <= uncertainty_robustness)),
+                    uncertainty_error_rank_corr=_safe_rank_correlation(
+                        uncertainty_robustness,
+                        errors,
+                    ),
+                    calibration_error=float(np.mean(np.abs(errors - uncertainty_robustness))),
+                )
+            )
+            all_errors.append(errors)
+            all_uncertainties.append(uncertainty_robustness)
+
+        if not fold_reports:
+            return {
+                "enabled": False,
+                "k_folds": effective_folds,
+                "n_samples": sample_count,
+                "reason": "no_valid_cross_validation_folds",
+            }
+
+        stacked_errors = np.concatenate(all_errors, axis=0)
+        stacked_uncertainties = np.concatenate(all_uncertainties, axis=0)
+        return {
+            "enabled": True,
+            "k_folds": len(fold_reports),
+            "n_samples": sample_count,
+            "stratify_bins": self.stratify_bins,
+            "folds": [
+                {
+                    "fold_index": report.fold_index,
+                    "train_size": report.train_size,
+                    "val_size": report.val_size,
+                    "robustness_mae": report.robustness_mae,
+                    "robustness_rmse": report.robustness_rmse,
+                    "mean_uncertainty": report.mean_uncertainty,
+                    "one_sigma_coverage": report.one_sigma_coverage,
+                    "uncertainty_error_rank_corr": report.uncertainty_error_rank_corr,
+                    "calibration_error": report.calibration_error,
+                }
+                for report in fold_reports
+            ],
+            "robustness_mae_mean": float(np.mean([report.robustness_mae for report in fold_reports])),
+            "robustness_rmse_mean": float(np.mean([report.robustness_rmse for report in fold_reports])),
+            "mean_uncertainty": float(np.mean(stacked_uncertainties)),
+            "one_sigma_coverage": float(np.mean(stacked_errors <= stacked_uncertainties)),
+            "uncertainty_error_rank_corr": _safe_rank_correlation(
+                stacked_uncertainties,
+                stacked_errors,
+            ),
+            "calibration_error": float(np.mean(np.abs(stacked_errors - stacked_uncertainties))),
+        }
+
+    def fit(
+        self,
+        train_dataset: torch.utils.data.Dataset,
+        val_dataset: torch.utils.data.Dataset | None = None,
+        epochs: int = 200,
+        batch_size: int = 64,
+        log_dir: str | None = None,
+    ) -> list[dict[str, list[float]]]:
+        if self.k_folds > 1:
+            self.last_cv_report = self.cross_validate(
+                train_dataset,
+                epochs=epochs,
+                batch_size=batch_size,
+            )
+        else:
+            self.last_cv_report = {
+                "enabled": False,
+                "k_folds": 0,
+                "n_samples": len(train_dataset),
+                "reason": "cross_validation_disabled",
+            }
+
+        return self._fit_members(
+            train_dataset,
+            val_dataset,
+            epochs=epochs,
+            batch_size=batch_size,
+            log_dir=log_dir,
+        )

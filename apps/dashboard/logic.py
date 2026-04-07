@@ -15,6 +15,7 @@ from packages.core.models import (
     RegisterCandidate,
     RobustnessReport,
 )
+from packages.orchestration.events import PipelineEvent
 
 
 def build_campaign_table(campaigns: list[CampaignState]) -> list[dict[str, Any]]:
@@ -59,6 +60,24 @@ def build_decision_table(decisions: list[AgentDecision]) -> list[dict[str, str]]
             "reasoning_summary": decision.reasoning_summary,
         }
         for decision in decisions
+    ]
+
+
+def build_event_table(
+    events: list[PipelineEvent],
+    limit: int = 12,
+) -> list[dict[str, str]]:
+    """Transform pipeline events into a compact monitoring table."""
+
+    recent_events = events[-limit:] if limit > 0 else events
+    return [
+        {
+            "time": event.created_at.strftime("%H:%M:%S"),
+            "event": event.event_type,
+            "phase": str(event.payload.get("phase", "")),
+            "status": str(event.payload.get("summary_status", event.payload.get("status", ""))),
+        }
+        for event in recent_events
     ]
 
 

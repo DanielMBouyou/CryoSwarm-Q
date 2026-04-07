@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from apps.dashboard.logic import (
     build_campaign_table,
     build_decision_table,
+    build_event_table,
     build_ranked_table,
     build_register_lookup_from_documents,
     select_noise_sensitivity_data,
@@ -14,6 +15,7 @@ from apps.dashboard.logic import (
 )
 from packages.core.enums import AgentName, BackendType, CampaignStatus, CandidateStatus, DecisionType
 from packages.core.models import AgentDecision, CampaignState, EvaluationResult, RegisterCandidate, RobustnessReport
+from packages.orchestration.events import PipelineEvent
 
 
 def test_build_campaign_table_empty() -> None:
@@ -80,6 +82,21 @@ def test_build_decision_table() -> None:
             "reasoning_summary": "Framed successfully.",
         }
     ]
+
+
+def test_build_event_table() -> None:
+    events = [
+        PipelineEvent(event_type="phase.started", payload={"phase": "geometry_generation", "status": "RUNNING"}),
+        PipelineEvent(event_type="geometry.completed", payload={"phase": "geometry_generation", "status": "RUNNING"}),
+        PipelineEvent(event_type="pipeline.completed", payload={"summary_status": "COMPLETED"}),
+    ]
+
+    rows = build_event_table(events, limit=2)
+
+    assert len(rows) == 2
+    assert rows[0]["event"] == "geometry.completed"
+    assert rows[0]["phase"] == "geometry_generation"
+    assert rows[1]["status"] == "COMPLETED"
 
 
 def test_robustness_chart_data_empty() -> None:

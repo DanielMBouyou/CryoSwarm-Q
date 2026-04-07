@@ -32,3 +32,22 @@ class TestObjectiveScore:
     def test_default_weights_sum_to_one(self) -> None:
         w = ScoringWeights()
         assert w.alpha + w.beta + w.gamma + w.delta == pytest.approx(1.0)
+
+    def test_score_is_clamped_to_zero(self) -> None:
+        score = compute_objective_score(
+            observable_score=0.1,
+            robustness=0.1,
+            cost=1.0,
+            latency=1.0,
+        )
+        assert score == 0.0
+
+    def test_score_is_clamped_to_one(self) -> None:
+        score = compute_objective_score(
+            observable_score=1.0,
+            robustness=1.0,
+            cost=0.0,
+            latency=0.0,
+            weights=ScoringWeights(alpha=0.7, beta=0.3, gamma=0.0, delta=0.0),
+        )
+        assert score == 1.0

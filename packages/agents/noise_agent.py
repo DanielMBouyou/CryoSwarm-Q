@@ -59,5 +59,6 @@ class NoiseRobustnessAgent(BaseAgent):
             metadata={
                 "sequence_family": sequence_candidate.sequence_family.value,
                 "predicted_cost": sequence_candidate.predicted_cost,
+                "robustness_weight_config": nominal_observables.get("robustness_weight_config", {}),
             },
         )

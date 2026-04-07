@@ -15,6 +15,12 @@ def test_physical_evaluator_returns_quantum_observables() -> None:
         target_density=0.5,
         scoring_weights=ScoringWeights(),
         reasoning_summary="test spec",
+        metadata={
+            "goal_constraints": {
+                "robustness_profile": "worst_case_safety",
+                "robustness_weight_smoothing": 1.0,
+            }
+        },
     )
     register = RegisterCandidate(
         campaign_id="camp_test",
@@ -67,7 +73,11 @@ def test_physical_evaluator_returns_quantum_observables() -> None:
     assert 0.0 <= nominal_score <= 1.0
     assert len(scenario_scores) == 3
     assert "rydberg_density" in nominal_observables
+    assert "adiabatic_ratio_max" in nominal_observables
+    assert "dynamic_blockade_radius_min_um" in nominal_observables
+    assert nominal_observables["robustness_weight_config"]["profile"] == "worst_case_safety"
     assert "low_noise" in scenario_observables
+    assert hamiltonian_metrics["robustness_weight_config"]["source"] == "profile"
     assert hamiltonian_metrics["dimension"] == 8
     assert worst_case <= nominal_score + 1e-6 or worst_case <= 1.0
     assert score_std >= 0.0

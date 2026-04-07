@@ -3,6 +3,7 @@ from __future__ import annotations
 from packages.core.enums import GoalStatus
 from packages.core.models import DemoGoalRequest, ExperimentGoal, PipelineSummary
 from packages.db.repositories import CryoSwarmRepository
+from packages.orchestration.events import EventBus
 from packages.orchestration.pipeline import CryoSwarmPipeline
 
 
@@ -21,7 +22,8 @@ def build_demo_goal(request: DemoGoalRequest | None = None) -> ExperimentGoal:
 def run_demo_campaign(
     request: DemoGoalRequest | None = None,
     repository: CryoSwarmRepository | None = None,
+    event_bus: EventBus | None = None,
 ) -> PipelineSummary:
     goal = build_demo_goal(request)
-    pipeline = CryoSwarmPipeline(repository=repository)
+    pipeline = CryoSwarmPipeline(repository=repository, event_bus=event_bus)
     return pipeline.run(goal)

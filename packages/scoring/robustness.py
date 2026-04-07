@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from statistics import mean, pstdev
+from typing import Any
 
 from packages.core.parameter_space import PhysicsParameterSpace
 
@@ -47,21 +48,22 @@ def robustness_score(
     worst_case: float,
     std: float,
     param_space: PhysicsParameterSpace | None = None,
+    constraints: dict[str, Any] | None = None,
 ) -> float:
     """Aggregate nominal, average, worst-case, and stability terms into one score.
 
-    The weights are intentionally conservative:
-    - 0.25 nominal performance
-    - 0.35 average perturbed performance
-    - 0.30 worst-case behavior
-    - 0.10 stability bonus from low variance
+    Default weights come from ``PhysicsParameterSpace`` and may be adapted from
+    ``ExperimentGoal.constraints`` through ``spec.metadata["goal_constraints"]``.
+    When a user requests custom weights, the final coefficients are blended with
+    the validated defaults to avoid abrupt scoring discontinuities.
     """
-    scoring = (param_space or PhysicsParameterSpace.default()).scoring
-    stability_bonus = max(0.0, 1.0 - min(std / scoring.stability_std_threshold.default, 1.0))
+    space = param_space or PhysicsParameterSpace.default()
+    resolved = space.resolve_robustness_weight_config(constraints)
+    stability_bonus = max(0.0, 1.0 - min(std / resolved.stability_std_threshold, 1.0))
     aggregate = (
-        scoring.nominal_weight.default * nominal
-        + scoring.average_weight.default * perturbed_average
-        + scoring.worst_case_weight.default * worst_case
-        + scoring.stability_weight.default * stability_bonus
+        resolved.nominal_weight * nominal
+        + resolved.average_weight * perturbed_average
+        + resolved.worst_case_weight * worst_case
+        + resolved.stability_weight * stability_bonus
     )
     return clamp_score(aggregate)

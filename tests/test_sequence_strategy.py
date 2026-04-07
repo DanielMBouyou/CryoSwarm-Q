@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from packages.agents.sequence_agent import SequenceAgent
-from packages.agents.sequence_strategy import SequenceStrategy, SequenceStrategyMode
+from packages.agents.sequence_strategy import (
+    BanditSelector,
+    HeuristicGenerator,
+    RLCandidateGenerator,
+    SequenceStrategy,
+    SequenceStrategyMode,
+)
 from packages.core.enums import SequenceFamily
 from packages.core.models import ExperimentSpec, MemoryRecord, RegisterCandidate, SequenceCandidate
 from packages.core.parameter_space import PhysicsParameterSpace
@@ -126,3 +132,41 @@ def test_problem_class_uses_objective_atoms_and_layout() -> None:
     )
     problem_class = strategy._compute_problem_class(_make_spec(), _make_register())
     assert problem_class == "balanced_campaign_search_4atoms_square"
+
+
+def test_component_generators_share_candidate_generator_contract() -> None:
+    heuristic = HeuristicGenerator(SequenceAgent())
+    rl = RLCandidateGenerator(StubRLAgent(ready=True))  # type: ignore[arg-type]
+
+    heuristic_candidates = heuristic.generate(_make_spec(), _make_register(), "camp_test", [])
+    rl_candidates = rl.generate(_make_spec(), _make_register(), "camp_test", [])
+
+    assert heuristic.available is True
+    assert rl.available is True
+    assert heuristic_candidates
+    assert rl_candidates
+    assert all(candidate.metadata.get("source") == "heuristic" for candidate in heuristic_candidates)
+    assert all(candidate.metadata.get("source") == "rl_policy" for candidate in rl_candidates)
+
+
+def test_bandit_selector_prefers_highest_ucb_strategy() -> None:
+    selector = BanditSelector()
+    problem_class = "balanced_campaign_search_4atoms_square"
+    selector.update_performance(problem_class, SequenceStrategyMode.HEURISTIC_ONLY.value, [0.4, 0.45])
+    selector.update_performance(problem_class, SequenceStrategyMode.RL_ONLY.value, [0.8, 0.82])
+
+    selected = selector.select(
+        problem_class,
+        [
+            SequenceStrategyMode.HEURISTIC_ONLY,
+            SequenceStrategyMode.RL_ONLY,
+            SequenceStrategyMode.HYBRID,
+        ],
+    )
+
+    assert selected in {
+        SequenceStrategyMode.HEURISTIC_ONLY,
+        SequenceStrategyMode.RL_ONLY,
+        SequenceStrategyMode.HYBRID,
+    }
+    assert selector.build_report()

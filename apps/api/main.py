@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from apps.api.live import CampaignEventBroadcaster
+from apps.api.rate_limit import RateLimitMiddleware
 from apps.api.routes.campaigns import router as campaigns_router
 from apps.api.routes.candidates import router as candidates_router
 from apps.api.routes.goals import router as goals_router
 from apps.api.routes.health import router as health_router
+from apps.api.routes.streaming import router as streaming_router
 from packages.core.config import get_settings
 from packages.db.init_db import initialize_database
 from packages.db.mongodb import close_mongo_client
@@ -19,11 +23,13 @@ from packages.core.logging import get_logger
 
 logger = get_logger(__name__)
 settings = get_settings()
+API_V1_PREFIX = "/api/v1"
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Initialize MongoDB once on startup and close the client on shutdown."""
+    application.state.event_broadcaster = CampaignEventBroadcaster(asyncio.get_running_loop())
     settings = get_settings()
     if settings.has_mongodb:
         try:
@@ -63,11 +69,16 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
+app.add_middleware(RateLimitMiddleware)
 
-app.include_router(health_router)
-app.include_router(goals_router)
-app.include_router(campaigns_router)
-app.include_router(candidates_router, prefix="/campaigns")
+api_v1_router = APIRouter(prefix=API_V1_PREFIX)
+api_v1_router.include_router(health_router)
+api_v1_router.include_router(goals_router)
+api_v1_router.include_router(campaigns_router)
+api_v1_router.include_router(candidates_router, prefix="/campaigns")
+api_v1_router.include_router(streaming_router)
+
+app.include_router(api_v1_router)
 
 
 @app.exception_handler(Exception)

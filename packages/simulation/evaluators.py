@@ -11,6 +11,7 @@ from packages.core.metadata_schemas import NoiseScenarioMetadata, SequenceMetada
 from packages.core.parameter_space import PhysicsParameterSpace
 from packages.core.models import ExperimentSpec, NoiseScenario, RegisterCandidate, SequenceCandidate
 from packages.pasqal_adapters.pulser_adapter import build_sequence_from_candidate, PULSER_AVAILABLE
+from packages.simulation.evaluation_cache import build_simulation_cache_key, get_evaluation_cache
 
 try:
     from pulser.noise_model import NoiseModel
@@ -125,13 +126,115 @@ def _top_bitstrings(counter: Counter[str], limit: int = 5) -> dict[str, int]:
     return dict(counter.most_common(limit))
 
 
+def _build_sequence_schedule(
+    sequence_candidate: SequenceCandidate,
+    *,
+    omega_max: float | None = None,
+    delta_start: float | None = None,
+    delta_end: float | None = None,
+    duration_ns: float | None = None,
+):
+    from packages.simulation.numpy_backend import PulseSchedule
+
+    sequence_metadata = cast(SequenceMetadata, sequence_candidate.metadata)
+    omega_shape = "constant"
+    family = sequence_candidate.sequence_family.value
+    if family == "blackman_sweep":
+        omega_shape = "blackman"
+    elif family == "global_ramp":
+        omega_shape = "ramp"
+
+    resolved_delta_start = float(sequence_candidate.detuning if delta_start is None else delta_start)
+    resolved_delta_end = float(
+        sequence_metadata.get("detuning_end", resolved_delta_start * 0.25)
+        if delta_end is None else delta_end
+    )
+    resolved_duration_ns = float(sequence_candidate.duration_ns if duration_ns is None else duration_ns)
+    resolved_omega_max = float(sequence_candidate.amplitude if omega_max is None else omega_max)
+    return PulseSchedule.from_legacy(
+        omega_max=resolved_omega_max,
+        delta_start=resolved_delta_start,
+        delta_end=resolved_delta_end,
+        duration_ns=resolved_duration_ns,
+        omega_shape=omega_shape,
+    )
+
+
+def _compute_schedule_diagnostics(
+    register_candidate: RegisterCandidate,
+    sequence_candidate: SequenceCandidate,
+    param_space: PhysicsParameterSpace | None = None,
+    *,
+    omega_max: float | None = None,
+    delta_start: float | None = None,
+    delta_end: float | None = None,
+    duration_ns: float | None = None,
+) -> dict[str, Any]:
+    from packages.simulation.numpy_backend import compute_schedule_diagnostics
+
+    space = param_space or PhysicsParameterSpace.default()
+    schedule = _build_sequence_schedule(
+        sequence_candidate,
+        omega_max=omega_max,
+        delta_start=delta_start,
+        delta_end=delta_end,
+        duration_ns=duration_ns,
+    )
+    return compute_schedule_diagnostics(
+        coords=register_candidate.coordinates,
+        n_steps=150,
+        schedule=schedule,
+        omega_max=float(sequence_candidate.amplitude if omega_max is None else omega_max),
+        delta_start=float(sequence_candidate.detuning if delta_start is None else delta_start),
+        delta_end=float(
+            cast(SequenceMetadata, sequence_candidate.metadata).get(
+                "detuning_end",
+                sequence_candidate.detuning * 0.25,
+            )
+            if delta_end is None else delta_end
+        ),
+        duration_ns=float(sequence_candidate.duration_ns if duration_ns is None else duration_ns),
+        c6=space.c6_coefficient,
+        max_atoms_dense=space.max_atoms_dense,
+        max_atoms_sparse=space.max_atoms_sparse,
+    )
+
+
+def _schedule_summary_fields(schedule_diagnostics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "adiabatic_ratio_max": schedule_diagnostics.get("adiabatic_ratio_max"),
+        "adiabatic_warning": bool(schedule_diagnostics.get("adiabatic_warning", False)),
+        "adiabatic_gap_min": schedule_diagnostics.get("adiabatic_gap_min"),
+        "dynamic_blockade_radius_min_um": schedule_diagnostics.get("blockade_radius_min_um"),
+        "dynamic_blockade_radius_max_um": schedule_diagnostics.get("blockade_radius_max_um"),
+        "integration_order": schedule_diagnostics.get("integration_order", 2),
+    }
+
+
+def _goal_constraints(spec: ExperimentSpec) -> dict[str, Any]:
+    metadata = spec.metadata if isinstance(spec.metadata, dict) else {}
+    goal_constraints = metadata.get("goal_constraints", {})
+    return goal_constraints if isinstance(goal_constraints, dict) else {}
+
+
 def _extract_observables(
     emulator: QutipEmulator,
     results: Any,
     spec: ExperimentSpec,
     register_candidate: RegisterCandidate,
+    sequence_candidate: SequenceCandidate,
     param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, float]]:
+    space = param_space or PhysicsParameterSpace.default()
+    active_robustness_weights = space.resolve_robustness_weight_config(_goal_constraints(spec)).to_dict()
+    schedule_diagnostics = _compute_schedule_diagnostics(
+        register_candidate,
+        sequence_candidate,
+        param_space=space,
+    )
+    effective_blockade_radius = float(
+        schedule_diagnostics.get("blockade_radius_max_um") or register_candidate.blockade_radius_um
+    )
     labels = _rydberg_labels(register_candidate.atom_count)
     single_site_ops = [emulator.build_operator([("sigma_rr", [label])]) for label in labels]
     population_traces = [np.asarray(values, dtype=float) for values in results.expect(single_site_ops)]
@@ -151,14 +254,14 @@ def _extract_observables(
             interaction_energy += interaction * pair_value
             max_interaction = max(max_interaction, interaction)
             distance = float(np.linalg.norm(np.array(register_candidate.coordinates[row_index]) - np.array(register_candidate.coordinates[col_index])))
-            if distance <= register_candidate.blockade_radius_um:
+            if distance <= effective_blockade_radius:
                 blockade_pair_values[f"q{row_index}-q{col_index}"] = pair_value
 
     blockade_violation = float(mean(blockade_pair_values.values())) if blockade_pair_values else 0.0
     interaction_energy_norm = interaction_energy / max_interaction if max_interaction else 0.0
     density_score = _target_density_score(spec.target_density, rydberg_density)
     blockade_score = _blockade_score(blockade_violation)
-    scoring = (param_space or PhysicsParameterSpace.default()).scoring
+    scoring = space.scoring
     observable_score = round(
         scoring.density_score_weight.default * density_score
         + scoring.blockade_score_weight.default * blockade_score,
@@ -204,6 +307,7 @@ def _extract_observables(
         "entanglement_entropy": round(ent_entropy, 6),
         "antiferromagnetic_order": round(af_order, 6),
         "connected_correlations": conn_corr_summary,
+        "robustness_weight_config": active_robustness_weights,
     }
     summary_metrics = {
         "observable_score": observable_score,
@@ -212,7 +316,10 @@ def _extract_observables(
         "interaction_energy_norm": round(interaction_energy_norm, 6),
         "entanglement_entropy": round(ent_entropy, 6),
         "antiferromagnetic_order": round(af_order, 6),
+        "robustness_weight_config": active_robustness_weights,
     }
+    observables.update(_schedule_summary_fields(schedule_diagnostics))
+    summary_metrics.update(_schedule_summary_fields(schedule_diagnostics))
     return observable_score, observables, summary_metrics
 
 
@@ -224,27 +331,47 @@ def simulate_sequence_candidate(
     param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
     space = param_space or PhysicsParameterSpace.default()
+    cache_key = build_simulation_cache_key(
+        spec,
+        register_candidate,
+        sequence_candidate,
+        noise_scenario,
+        space,
+        emulator_available=EMULATOR_AVAILABLE,
+        pulser_available=PULSER_AVAILABLE,
+        scipy_sparse_available=SCIPY_SPARSE_AVAILABLE,
+    )
+    cached = get_evaluation_cache().get(cache_key)
+    if cached is not None:
+        return cached
+
     if register_candidate.atom_count > space.max_atoms_evaluator_parallel:
         logger.warning(
             "Skipping Pulser/Qutip evaluation for %s atoms and using fallback path.",
             register_candidate.atom_count,
         )
-        return _simulate_with_numpy_fallback(
+        result = _simulate_with_numpy_fallback(
             spec,
             register_candidate,
             sequence_candidate,
             noise_scenario,
             param_space=space,
+            rng_seed=int(cache_key[:16], 16) % (2**32),
         )
+        get_evaluation_cache().set(cache_key, result)
+        return result
 
     if not EMULATOR_AVAILABLE or not PULSER_AVAILABLE:
-        return _simulate_with_numpy_fallback(
+        result = _simulate_with_numpy_fallback(
             spec,
             register_candidate,
             sequence_candidate,
             noise_scenario,
             param_space=space,
+            rng_seed=int(cache_key[:16], 16) % (2**32),
         )
+        get_evaluation_cache().set(cache_key, result)
+        return result
 
     sequence = build_sequence_from_candidate(
         register_candidate,
@@ -260,6 +387,7 @@ def simulate_sequence_candidate(
         results,
         spec,
         register_candidate,
+        sequence_candidate,
         space,
     )
 
@@ -270,7 +398,9 @@ def simulate_sequence_candidate(
     )
     observables["hamiltonian_metrics"] = hamiltonian_metrics
     observables["noise_label"] = noise_scenario.label.value if noise_scenario else "noiseless"
-    return observable_score, observables, {**summary_metrics, **hamiltonian_metrics}
+    result = (observable_score, observables, {**summary_metrics, **hamiltonian_metrics})
+    get_evaluation_cache().set(cache_key, result)
+    return result
 
 
 def evaluate_candidate_robustness(
@@ -280,14 +410,16 @@ def evaluate_candidate_robustness(
     scenarios: list[NoiseScenario] | None = None,
     param_space: PhysicsParameterSpace | None = None,
 ) -> tuple[float, dict[str, float], float, float, float, float, float, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    goal_constraints = _goal_constraints(spec)
+    space = param_space or PhysicsParameterSpace.default()
     nominal_score, nominal_observables, hamiltonian_metrics = simulate_sequence_candidate(
         spec,
         register_candidate,
         sequence_candidate,
         noise_scenario=None,
-        param_space=param_space,
+        param_space=space,
     )
-    active_scenarios = scenarios or default_noise_scenarios(param_space)
+    active_scenarios = scenarios or default_noise_scenarios(space)
     scenario_scores: dict[str, float] = {}
     scenario_observables: dict[str, Any] = {}
     perturbed_scores: list[float] = []
@@ -298,7 +430,7 @@ def evaluate_candidate_robustness(
             register_candidate,
             sequence_candidate,
             noise_scenario=scenario,
-            param_space=param_space,
+            param_space=space,
         )
         scenario_scores[scenario.label.value] = score
         scenario_observables[scenario.label.value] = observables
@@ -313,8 +445,18 @@ def evaluate_candidate_robustness(
         average_score,
         worst_score,
         std_score,
-        param_space=param_space,
+        param_space=space,
+        constraints=goal_constraints,
     )
+    active_robustness_weights = space.resolve_robustness_weight_config(goal_constraints).to_dict()
+    nominal_observables = {
+        **nominal_observables,
+        "robustness_weight_config": active_robustness_weights,
+    }
+    hamiltonian_metrics = {
+        **hamiltonian_metrics,
+        "robustness_weight_config": active_robustness_weights,
+    }
     return (
         nominal_score,
         scenario_scores,
@@ -338,11 +480,13 @@ def _simulate_with_numpy_fallback(
     sequence_candidate: SequenceCandidate,
     noise_scenario: NoiseScenario | None = None,
     param_space: PhysicsParameterSpace | None = None,
+    rng_seed: int | None = None,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
     """Run a lightweight exact-diag simulation via numpy/scipy."""
     from packages.simulation.numpy_backend import simulate_rydberg_evolution
 
     space = param_space or PhysicsParameterSpace.default()
+    active_robustness_weights = space.resolve_robustness_weight_config(_goal_constraints(spec)).to_dict()
     omega_max = float(sequence_candidate.amplitude)
     delta_start = float(sequence_candidate.detuning)
     sequence_metadata = cast(SequenceMetadata, sequence_candidate.metadata)
@@ -356,7 +500,7 @@ def _simulate_with_numpy_fallback(
         omega_shape = "ramp"
 
     if noise_scenario is not None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(rng_seed)
         omega_max *= 1.0 + rng.normal(0.0, noise_scenario.amplitude_jitter)
         delta_start += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_start) + 0.1)
         delta_end += rng.normal(0.0, noise_scenario.detuning_jitter * abs(delta_end) + 0.1)
@@ -369,6 +513,16 @@ def _simulate_with_numpy_fallback(
     else:
         spatial_inhom = 0.0
         spatial_factors = np.ones(register_candidate.atom_count, dtype=np.float64)
+
+    schedule_diagnostics = _compute_schedule_diagnostics(
+        register_candidate,
+        sequence_candidate,
+        param_space=space,
+        omega_max=max(omega_max, 0.01),
+        delta_start=delta_start,
+        delta_end=delta_end,
+        duration_ns=duration_ns,
+    )
 
     result = simulate_rydberg_evolution(
         coords=register_candidate.coordinates,
@@ -414,7 +568,9 @@ def _simulate_with_numpy_fallback(
         "spatial_drive_factors": [round(float(value), 6) for value in spatial_factors],
         "hamiltonian_metrics": hamiltonian_metrics,
         "noise_label": noise_scenario.label.value if noise_scenario else "noiseless",
-        "backend": "numpy_exact",
+        "backend": result["backend"],
+        "robustness_weight_config": active_robustness_weights,
+        **_schedule_summary_fields(schedule_diagnostics),
     }
     summary: dict[str, Any] = {
         "observable_score": observable_score,
@@ -425,6 +581,8 @@ def _simulate_with_numpy_fallback(
         "antiferromagnetic_order": round(result["antiferromagnetic_order"], 6),
         "spatial_inhomogeneity": round(spatial_inhom, 6),
         "spatial_drive_std": round(float(np.std(spatial_factors)), 6),
+        "robustness_weight_config": active_robustness_weights,
+        **_schedule_summary_fields(schedule_diagnostics),
         **hamiltonian_metrics,
     }
     return observable_score, observables, summary

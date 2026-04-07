@@ -12,6 +12,8 @@ from apps.api.dependencies import get_repository
 from apps.api.main import app
 from packages.core.config import Settings
 
+API_PREFIX = "/api/v1"
+
 
 class _FakeRepository:
     def create_goal(self, goal):
@@ -58,7 +60,7 @@ class TestApiKeyRequired:
         client = TestClient(app)
 
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Test goal auth",
                 "scientific_objective": "Test auth enforcement.",
@@ -77,7 +79,7 @@ class TestApiKeyRequired:
         client = TestClient(app)
 
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Test goal auth",
                 "scientific_objective": "Test auth enforcement.",
@@ -97,7 +99,7 @@ class TestApiKeyRequired:
         client = TestClient(app)
 
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Test goal auth success",
                 "scientific_objective": "Test that valid key passes.",
@@ -115,7 +117,7 @@ class TestApiKeyRequired:
         app.dependency_overrides[auth_module.get_settings] = _settings_with_key
         client = TestClient(app)
 
-        response = client.get("/health")
+        response = client.get(f"{API_PREFIX}/health")
 
         assert response.status_code == 200
         app.dependency_overrides.clear()
@@ -127,7 +129,7 @@ class TestApiKeyRequired:
         app.dependency_overrides[auth_module.get_settings] = _settings_with_key
         client = TestClient(app)
 
-        response = client.get("/goals/any-id")
+        response = client.get(f"{API_PREFIX}/goals/any-id")
 
         assert response.status_code == 404
         app.dependency_overrides.clear()
@@ -144,7 +146,7 @@ class TestApiKeyDisabled:
         client = TestClient(app)
 
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Test goal no auth",
                 "scientific_objective": "Auth disabled in dev.",

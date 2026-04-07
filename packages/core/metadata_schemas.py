@@ -117,6 +117,7 @@ class NominalObservables(TypedDict, total=False):
     spatial_inhomogeneity: float
     spatial_drive_factors: list[float]
     backend: str
+    robustness_weight_config: dict[str, Any]
 
 
 class HamiltonianMetrics(TypedDict, total=False):
@@ -126,3 +127,4 @@ class HamiltonianMetrics(TypedDict, total=False):
     frobenius_norm: float
     spectral_radius: float
     spectral_gap: float
+    robustness_weight_config: dict[str, Any]

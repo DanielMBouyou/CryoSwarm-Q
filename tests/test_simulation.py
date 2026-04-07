@@ -9,6 +9,8 @@ from packages.simulation.observables import rydberg_density, total_rydberg_fract
 
 pytest.importorskip("scipy", reason="scipy required for numpy backend")
 from packages.simulation.numpy_backend import (  # noqa: E402
+    PulseSchedule,
+    compute_schedule_diagnostics,
     estimate_discretization_error,
     simulate_rydberg_evolution,
 )
@@ -99,8 +101,91 @@ class TestNumPySimulation:
             "pair_correlations", "connected_correlations",
             "total_rydberg_fraction", "antiferromagnetic_order",
             "entanglement_entropy", "top_bitstrings", "backend", "n_steps", "dt_us",
+            "integration_order", "pulse_schedule", "adiabatic_ratios",
+            "adiabatic_ratio_max", "adiabatic_warning",
+            "blockade_radius_min_um", "blockade_radius_max_um",
         }
         assert expected_keys <= set(result.keys())
+
+    def test_dynamic_blockade_radius_changes_for_ramp(self) -> None:
+        coords = [(0.0, 0.0), (7.0, 0.0)]
+        result = simulate_rydberg_evolution(
+            coords,
+            omega_max=6.0,
+            delta_start=-15.0,
+            delta_end=8.0,
+            duration_ns=3000,
+            n_steps=60,
+            omega_shape="ramp",
+        )
+        assert result["blockade_radius_min_um"] is not None
+        assert result["blockade_radius_max_um"] is not None
+        assert result["blockade_radius_max_um"] > result["blockade_radius_min_um"]
+
+    def test_fast_sweep_flags_adiabatic_warning(self) -> None:
+        coords = [(0.0, 0.0), (7.0, 0.0), (14.0, 0.0)]
+        result = simulate_rydberg_evolution(
+            coords,
+            omega_max=2.0,
+            delta_start=-30.0,
+            delta_end=30.0,
+            duration_ns=120.0,
+            n_steps=80,
+        )
+        assert result["adiabatic_warning"] is True
+
+
+class TestPulseSchedule:
+    def test_custom_linear_schedule_interpolates_profiles(self) -> None:
+        schedule = PulseSchedule(
+            duration_us=2.0,
+            omega_times_us=np.array([0.0, 1.0, 2.0]),
+            omega_values=np.array([0.0, 2.0, 4.0]),
+            delta_times_us=np.array([0.0, 2.0]),
+            delta_values=np.array([-2.0, 2.0]),
+        )
+
+        np.testing.assert_allclose(schedule.omega_at(np.array([0.5, 1.5])), [1.0, 3.0], atol=1e-12)
+        np.testing.assert_allclose(schedule.delta_at(np.array([0.5, 1.5])), [-1.0, 1.0], atol=1e-12)
+
+    def test_simulation_accepts_custom_schedule(self) -> None:
+        coords = [(0.0, 0.0), (7.0, 0.0)]
+        schedule = PulseSchedule(
+            duration_us=1.5,
+            omega_times_us=np.array([0.0, 0.75, 1.5]),
+            omega_values=np.array([0.0, 5.0, 5.0]),
+            delta_times_us=np.array([0.0, 1.5]),
+            delta_values=np.array([-10.0, 8.0]),
+        )
+        result = simulate_rydberg_evolution(
+            coords,
+            omega_max=0.0,
+            delta_start=0.0,
+            delta_end=0.0,
+            duration_ns=1500,
+            n_steps=50,
+            schedule=schedule,
+        )
+
+        assert result["pulse_schedule"]["interpolation"] == "linear"
+        assert len(result["pulse_schedule"]["omega_profile"]) == 50
+        assert result["integration_order"] == 2
+
+    def test_schedule_diagnostics_reports_gap_and_blockade(self) -> None:
+        coords = [(0.0, 0.0), (7.0, 0.0)]
+        diagnostics = compute_schedule_diagnostics(
+            coords=coords,
+            n_steps=40,
+            omega_max=5.0,
+            delta_start=-10.0,
+            delta_end=10.0,
+            duration_ns=2000.0,
+        )
+
+        assert diagnostics["adiabatic_ratio_max"] is not None
+        assert diagnostics["adiabatic_gap_min"] is not None
+        assert diagnostics["blockade_radius_min_um"] is not None
+        assert diagnostics["pulse_schedule"]["times_us"]
 
 
 class TestDiscretizationError:
@@ -180,6 +265,8 @@ class TestDiscretizationError:
             "fidelity_half_steps",
             "recommended_n_steps",
             "n_steps_used",
+            "adiabatic_ratio_max",
+            "adiabatic_warning",
         } <= set(result.keys())
 
 

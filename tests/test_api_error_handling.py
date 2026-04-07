@@ -10,6 +10,8 @@ from apps.api.main import app
 from packages.core.config import Settings
 from packages.core.enums import AppEnvironment
 
+API_PREFIX = "/api/v1"
+
 
 class _FakeRepository:
     def create_goal(self, goal):
@@ -30,7 +32,7 @@ def test_get_missing_goal_returns_404() -> None:
     app.dependency_overrides[auth_module.get_settings] = lambda: Settings()
     client = TestClient(app)
 
-    response = client.get("/goals/missing")
+    response = client.get(f"{API_PREFIX}/goals/missing")
 
     assert response.status_code == 404
     app.dependency_overrides.clear()
@@ -42,7 +44,7 @@ def test_post_invalid_goal_returns_422() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/goals",
+        f"{API_PREFIX}/goals",
         json={
             "title": "Bad",
             "scientific_objective": "Invalid atom count should fail.",
@@ -59,7 +61,7 @@ def test_get_missing_campaign_returns_404() -> None:
     app.dependency_overrides[auth_module.get_settings] = lambda: Settings()
     client = TestClient(app)
 
-    response = client.get("/campaigns/missing")
+    response = client.get(f"{API_PREFIX}/campaigns/missing")
 
     assert response.status_code == 404
     app.dependency_overrides.clear()
@@ -70,7 +72,7 @@ def test_get_missing_campaign_candidates_returns_404() -> None:
     app.dependency_overrides[auth_module.get_settings] = lambda: Settings()
     client = TestClient(app)
 
-    response = client.get("/campaigns/missing/candidates")
+    response = client.get(f"{API_PREFIX}/campaigns/missing/candidates")
 
     assert response.status_code == 404
     app.dependency_overrides.clear()
@@ -91,7 +93,7 @@ def test_run_demo_returns_structured_500_when_pipeline_crashes(monkeypatch) -> N
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
-    response = client.post("/campaigns/run-demo", json={})
+    response = client.post(f"{API_PREFIX}/campaigns/run-demo", json={})
 
     assert response.status_code == 500
     body = response.json()
@@ -136,7 +138,7 @@ def test_health_does_not_leak_mongodb_uri(monkeypatch) -> None:
     monkeypatch.setattr(health_route_module, "get_mongo_client", _failing_client)
 
     client = TestClient(app)
-    response = client.get("/health")
+    response = client.get(f"{API_PREFIX}/health")
 
     body = response.json()
     assert response.status_code == 200

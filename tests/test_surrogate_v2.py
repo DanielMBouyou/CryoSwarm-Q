@@ -99,3 +99,31 @@ def test_ensemble_save_load(tmp_path):
     m1, _ = ensemble.predict_with_uncertainty(x)
     m2, _ = ensemble2.predict_with_uncertainty(x)
     np.testing.assert_array_almost_equal(m1, m2)
+
+
+def test_ensemble_trainer_reports_stratified_kfold_calibration():
+    from packages.ml.surrogate import EnsembleTrainer, SurrogateEnsemble
+
+    x = torch.randn(24, 10)
+    robustness = torch.linspace(0.1, 0.9, steps=24).unsqueeze(1)
+    other_targets = torch.sigmoid(torch.randn(24, 3))
+    y = torch.cat([robustness, other_targets], dim=1)
+    dataset = TensorDataset(x, y)
+
+    ensemble = SurrogateEnsemble(n_models=2, input_dim=10, hidden=32, n_blocks=1)
+    trainer = EnsembleTrainer(
+        ensemble,
+        lr=5e-3,
+        bootstrap=True,
+        k_folds=3,
+        stratify_bins=4,
+        cv_seed=7,
+    )
+    histories = trainer.fit(dataset, epochs=1, batch_size=8)
+
+    assert len(histories) == 2
+    assert trainer.last_cv_report["enabled"] is True
+    assert trainer.last_cv_report["k_folds"] == 3
+    assert len(trainer.last_cv_report["folds"]) == 3
+    assert "uncertainty_error_rank_corr" in trainer.last_cv_report
+    assert "calibration_error" in trainer.last_cv_report

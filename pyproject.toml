@@ -26,6 +26,8 @@ dependencies = [
   "numpy>=2.1",
   "scipy>=1.13",
   "matplotlib>=3.8",
+  "plotly>=5.22",
+  "networkx>=3.2",
 ]
 
 [project.optional-dependencies]
@@ -59,7 +61,8 @@ addopts = "--strict-markers"
 source = ["packages", "apps"]
 omit = [
   "packages/ml/gpu_backend.py",
-  "apps/dashboard/*",
+  "apps/dashboard/app.py",
+  "apps/dashboard/pages/*",
 ]
 
 [tool.coverage.report]

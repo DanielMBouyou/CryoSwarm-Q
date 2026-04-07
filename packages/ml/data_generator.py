@@ -148,6 +148,7 @@ def _unit_samples(method: str, n_samples: int, n_dims: int, rng: np.random.Gener
 
 
 def _fast_target_estimate(
+    spec: ExperimentSpec,
     register: RegisterCandidate,
     sequence: SequenceCandidate,
     param_space: PhysicsParameterSpace,
@@ -160,7 +161,15 @@ def _fast_target_estimate(
     nominal = density_proxy
     worst_case = clamp_score(max(0.0, nominal - 0.12))
     avg = clamp_score(max(0.0, nominal - 0.06))
-    robustness = robustness_score(nominal, avg, worst_case, 0.05, param_space=param_space)
+    goal_constraints = spec.metadata.get("goal_constraints", {}) if isinstance(spec.metadata, dict) else {}
+    robustness = robustness_score(
+        nominal,
+        avg,
+        worst_case,
+        0.05,
+        param_space=param_space,
+        constraints=goal_constraints if isinstance(goal_constraints, dict) else None,
+    )
     return robustness, nominal, worst_case, nominal
 
 
@@ -175,7 +184,12 @@ def _evaluate_sample_task(
     try:
         param_space = PhysicsParameterSpace.from_dict(param_space_dict)
         if fast_mode:
-            robustness, nominal, worst_case, observable = _fast_target_estimate(register, sequence, param_space)
+            robustness, nominal, worst_case, observable = _fast_target_estimate(
+                spec,
+                register,
+                sequence,
+                param_space,
+            )
         else:
             scenarios = None
             if noise_payload is not None:

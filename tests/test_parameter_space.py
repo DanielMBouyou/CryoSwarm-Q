@@ -114,3 +114,47 @@ def test_atom_limits_are_consistent() -> None:
         <= param_space.max_atoms_evaluator_parallel
         <= param_space.max_atoms_sparse
     )
+
+
+def test_resolve_robustness_weight_config_uses_smoothed_goal_constraints() -> None:
+    param_space = PhysicsParameterSpace.default()
+
+    config = param_space.resolve_robustness_weight_config(
+        {
+            "robustness_profile": "worst_case_safety",
+            "robustness_weight_smoothing": 0.5,
+        }
+    )
+
+    assert config.source == "profile"
+    assert config.profile == "worst_case_safety"
+    assert config.worst_case_weight > param_space.scoring.worst_case_weight.default
+    assert config.nominal_weight < param_space.scoring.nominal_weight.default
+    assert np.isclose(
+        config.nominal_weight
+        + config.average_weight
+        + config.worst_case_weight
+        + config.stability_weight,
+        1.0,
+        atol=1e-6,
+    )
+
+
+def test_resolve_robustness_weight_config_allows_explicit_custom_weights() -> None:
+    param_space = PhysicsParameterSpace.default()
+
+    config = param_space.resolve_robustness_weight_config(
+        {
+            "robustness_weights": {
+                "nominal_weight": 0.10,
+                "average_weight": 0.20,
+                "worst_case_weight": 0.50,
+                "stability_weight": 0.20,
+            },
+            "robustness_weight_smoothing": 1.0,
+        }
+    )
+
+    assert config.source == "custom"
+    assert np.isclose(config.nominal_weight, 0.1, atol=1e-6)
+    assert np.isclose(config.worst_case_weight, 0.5, atol=1e-6)

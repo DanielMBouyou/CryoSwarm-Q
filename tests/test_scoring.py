@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from packages.core.parameter_space import PhysicsParameterSpace
 from packages.scoring.robustness import (
     clamp_score,
     perturbation_average,
@@ -81,3 +82,19 @@ class TestRobustnessScore:
     def test_bounded(self) -> None:
         score = robustness_score(0.5, 0.4, 0.3, 0.1)
         assert 0.0 <= score <= 1.0
+
+    def test_goal_constraints_can_shift_weights_toward_worst_case(self) -> None:
+        param_space = PhysicsParameterSpace.default()
+        baseline = robustness_score(0.9, 0.85, 0.4, 0.05, param_space=param_space)
+        tuned = robustness_score(
+            0.9,
+            0.85,
+            0.4,
+            0.05,
+            param_space=param_space,
+            constraints={
+                "robustness_profile": "worst_case_safety",
+                "robustness_weight_smoothing": 1.0,
+            },
+        )
+        assert tuned < baseline

@@ -16,6 +16,8 @@ from packages.core.config import Settings
 from packages.core.enums import BackendType, CampaignStatus, CandidateStatus, GoalStatus
 from packages.core.models import CampaignState, EvaluationResult, ExperimentGoal, PipelineSummary
 
+API_PREFIX = "/api/v1"
+
 
 class FakeRepository:
     """In-memory repository stub used to exercise API routes."""
@@ -64,7 +66,7 @@ def client(fake_repo: FakeRepository) -> TestClient:
 
 class TestHealthRoute:
     def test_returns_200(self, client: TestClient) -> None:
-        response = client.get("/health")
+        response = client.get(f"{API_PREFIX}/health")
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
 
@@ -72,7 +74,7 @@ class TestHealthRoute:
 class TestGoalRoutes:
     def test_create_goal_returns_200(self, client: TestClient) -> None:
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Test neutral-atom benchmark",
                 "scientific_objective": "Evaluate robustness of small configurations.",
@@ -89,7 +91,7 @@ class TestGoalRoutes:
 
     def test_create_goal_with_invalid_atom_count(self, client: TestClient) -> None:
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "Bad atoms",
                 "scientific_objective": "Atom count below lower bound.",
@@ -101,7 +103,7 @@ class TestGoalRoutes:
 
     def test_create_goal_with_short_title(self, client: TestClient) -> None:
         response = client.post(
-            "/goals",
+            f"{API_PREFIX}/goals",
             json={
                 "title": "AB",
                 "scientific_objective": "Title is too short.",
@@ -119,23 +121,23 @@ class TestGoalRoutes:
         )
         fake_repo.goals[goal.id] = goal
 
-        response = client.get(f"/goals/{goal.id}")
+        response = client.get(f"{API_PREFIX}/goals/{goal.id}")
 
         assert response.status_code == 200
         assert response.json()["id"] == goal.id
 
     def test_get_missing_goal_returns_404(self, client: TestClient) -> None:
-        response = client.get("/goals/nonexistent_id")
+        response = client.get(f"{API_PREFIX}/goals/nonexistent_id")
         assert response.status_code == 404
 
 
 class TestCampaignRoutes:
     def test_get_missing_campaign_returns_404(self, client: TestClient) -> None:
-        response = client.get("/campaigns/nonexistent_id")
+        response = client.get(f"{API_PREFIX}/campaigns/nonexistent_id")
         assert response.status_code == 404
 
     def test_list_campaign_candidates_404_for_missing(self, client: TestClient) -> None:
-        response = client.get("/campaigns/nonexistent/candidates")
+        response = client.get(f"{API_PREFIX}/campaigns/nonexistent/candidates")
         assert response.status_code == 404
 
     def test_list_campaign_candidates_returns_empty(
@@ -146,7 +148,7 @@ class TestCampaignRoutes:
         campaign = CampaignState(goal_id="goal_test", status=CampaignStatus.COMPLETED)
         fake_repo.campaigns[campaign.id] = campaign
 
-        response = client.get(f"/campaigns/{campaign.id}/candidates")
+        response = client.get(f"{API_PREFIX}/campaigns/{campaign.id}/candidates")
 
         assert response.status_code == 200
         assert response.json() == []
@@ -176,7 +178,7 @@ class TestCampaignRoutes:
         )
         fake_repo.evaluation_results[campaign.id] = [result]
 
-        response = client.get(f"/campaigns/{campaign.id}/candidates")
+        response = client.get(f"{API_PREFIX}/campaigns/{campaign.id}/candidates")
 
         assert response.status_code == 200
         payload = response.json()
@@ -190,7 +192,7 @@ class TestRunDemo:
         client: TestClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def fake_run(request, repository) -> PipelineSummary:
+        def fake_run(request, repository, event_bus=None) -> PipelineSummary:
             goal = ExperimentGoal(
                 title=request.title,
                 scientific_objective=request.scientific_objective,
@@ -201,7 +203,7 @@ class TestRunDemo:
 
         monkeypatch.setattr(campaigns_module, "run_demo_campaign", fake_run)
 
-        response = client.post("/campaigns/run-demo", json={})
+        response = client.post(f"{API_PREFIX}/campaigns/run-demo", json={})
 
         assert response.status_code == 200
         assert response.json()["status"] == "COMPLETED"
@@ -211,7 +213,7 @@ class TestRunDemo:
         client: TestClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def fake_run(request, repository) -> PipelineSummary:
+        def fake_run(request, repository, event_bus=None) -> PipelineSummary:
             goal = ExperimentGoal(
                 title=request.title,
                 scientific_objective=request.scientific_objective,
@@ -225,7 +227,7 @@ class TestRunDemo:
         monkeypatch.setattr(campaigns_module, "run_demo_campaign", fake_run)
 
         response = client.post(
-            "/campaigns/run-demo",
+            f"{API_PREFIX}/campaigns/run-demo",
             json={
                 "title": "Custom test campaign",
                 "scientific_objective": "Custom objective",
@@ -250,7 +252,7 @@ class TestRunDemo:
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated crash")),
         )
 
-        response = client.post("/campaigns/run-demo", json={})
+        response = client.post(f"{API_PREFIX}/campaigns/run-demo", json={})
 
         assert response.status_code == 500
         assert response.json()["detail"]["error"] == "Campaign execution failed."
@@ -268,7 +270,7 @@ class TestGlobalExceptionHandler:
             lambda: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 
-        response = client.get("/health")
+        response = client.get(f"{API_PREFIX}/health")
 
         assert response.status_code == 500
         body = response.json()

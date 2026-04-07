@@ -30,6 +30,8 @@ class Settings(BaseModel):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_base_url: str = "http://localhost:8000"
+    api_rate_limit_requests: int = 60
+    api_rate_limit_window_seconds: int = 60
     pasqal_cloud_username: str = ""
     pasqal_cloud_password: str = ""
     pasqal_token: str = ""
@@ -74,6 +76,8 @@ def get_settings() -> Settings:
         api_host=os.getenv("API_HOST", "0.0.0.0"),
         api_port=int(os.getenv("API_PORT", "8000")),
         api_base_url=os.getenv("API_BASE_URL", "http://localhost:8000"),
+        api_rate_limit_requests=int(os.getenv("API_RATE_LIMIT_REQUESTS", "60")),
+        api_rate_limit_window_seconds=int(os.getenv("API_RATE_LIMIT_WINDOW_SECONDS", "60")),
         pasqal_cloud_username=os.getenv("PASQAL_CLOUD_USERNAME", ""),
         pasqal_cloud_password=os.getenv("PASQAL_CLOUD_PASSWORD", ""),
         pasqal_token=os.getenv("PASQAL_TOKEN", ""),

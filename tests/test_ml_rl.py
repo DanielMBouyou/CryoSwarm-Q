@@ -153,6 +153,33 @@ class TestPulseDesignEnv:
 
 @pytest.mark.skipif(not TORCH_AVAILABLE, reason="PyTorch not installed")
 class TestPPOComponents:
+    def test_running_mean_std_tracks_reward_scale(self):
+        from packages.ml.ppo import RunningMeanStd
+
+        rms = RunningMeanStd(epsilon=1e-4, clip_value=10.0)
+        rms.update([1.0, 2.0, 3.0, 4.0])
+
+        assert rms.mean == pytest.approx(2.5, abs=1e-2)
+        assert rms.std > 0.0
+        assert abs(rms.normalize(2.5)) < 1e-2
+
+    def test_replay_buffer_samples_recent_rollouts(self):
+        from packages.ml.ppo import ExperienceReplayBuffer
+
+        buffer = ExperienceReplayBuffer(capacity=32, seed=0)
+        obs = torch.randn(8, OBS_DIM)
+        actions = torch.randn(8, ACT_DIM)
+        log_probs = torch.randn(8)
+        advantages = torch.randn(8)
+        returns = torch.randn(8)
+
+        buffer.add_rollout(obs, actions, log_probs, advantages, returns, policy_version=0)
+        sample = buffer.sample(batch_size=4, current_policy_version=1, max_policy_lag=2)
+
+        assert sample is not None
+        assert sample.observations.shape == (4, OBS_DIM)
+        assert sample.actions.shape == (4, ACT_DIM)
+
     def test_actor_critic_forward(self):
         from packages.ml.ppo import ActorCritic
 
@@ -232,6 +259,8 @@ class TestPPOComponents:
 
         assert len(history["policy_loss"]) == 2
         assert len(history["value_loss"]) == 2
+        assert len(history["replay_loss"]) == 2
+        assert len(history["reward_mean"]) == 2
 
 
 # ---- RL sequence agent tests ----

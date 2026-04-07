@@ -8,7 +8,7 @@ the X-API-Key header. When unset, authentication is bypassed for local use.
 
 import secrets
 
-from fastapi import Depends, HTTPException, Security
+from fastapi import Depends, HTTPException, Security, WebSocket, WebSocketException, status
 from fastapi.security import APIKeyHeader
 
 from packages.core.config import Settings, get_settings
@@ -35,4 +35,27 @@ def verify_api_key(
         raise HTTPException(
             status_code=403,
             detail="Invalid API key.",
+        )
+
+
+def verify_websocket_api_key(
+    websocket: WebSocket,
+    settings: Settings | None = None,
+) -> None:
+    """Verify the API key for WebSocket connections."""
+    active_settings = settings or get_settings()
+    if not active_settings.has_api_key:
+        return
+
+    api_key = websocket.headers.get("X-API-Key") or websocket.query_params.get("api_key")
+    if api_key is None:
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Missing API key.",
+        )
+
+    if not secrets.compare_digest(api_key, active_settings.api_key):
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid API key.",
         )

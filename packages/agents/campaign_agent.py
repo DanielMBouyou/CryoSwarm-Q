@@ -27,6 +27,7 @@ class CampaignAgent(BaseAgent):
                     f"{top_candidate.sequence_candidate_id if top_candidate else 'none'} as top candidate."
                 ),
                 "summary_report": {
+                    **campaign.summary_report,
                     "top_candidate_id": top_candidate.sequence_candidate_id if top_candidate else None,
                     "top_objective_score": top_candidate.objective_score if top_candidate else None,
                     "ranked_candidate_count": len(ranked),

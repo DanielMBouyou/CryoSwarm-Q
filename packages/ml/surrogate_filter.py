@@ -56,6 +56,28 @@ class SurrogateFilter:
             logger.warning("SurrogateFilter enabled but PyTorch not installed - passthrough mode.")
             self.enabled = False
 
+    @property
+    def ready(self) -> bool:
+        return self.enabled and (self._model is not None or self._ensemble is not None)
+
+    def _passthrough_report(
+        self,
+        sequences: list[SequenceCandidate],
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "applied": False,
+            "reason": reason,
+            "use_ensemble": self._ensemble is not None,
+            "input_count": len(sequences),
+            "kept_count": len(sequences),
+            "rejected_count": 0,
+            "top_k": self.top_k,
+            "min_score": self.min_score,
+            "max_uncertainty": self.max_uncertainty,
+        }
+
     def _configure_feature_builder(self, input_dim: int) -> None:
         self._feature_builder = build_feature_vector_v2 if input_dim >= INPUT_DIM_V2 else build_feature_vector
 
@@ -158,13 +180,13 @@ class SurrogateFilter:
         self,
         sequences: list[SequenceCandidate],
         register_lookup: dict[str, RegisterCandidate],
-    ) -> list[SequenceCandidate]:
+    ) -> tuple[list[SequenceCandidate], dict[str, Any]]:
         if self._ensemble is None:
-            return sequences
+            return sequences, self._passthrough_report(sequences, "ensemble_unavailable")
 
         features, valid_indices = self._extract_batch_features(sequences, register_lookup)
         if features is None:
-            return sequences
+            return sequences, self._passthrough_report(sequences, "no_valid_register_features")
 
         mean_preds, uncertainty = self._ensemble.predict_with_uncertainty(features)
         robustness_scores = mean_preds[:, 0]
@@ -205,25 +227,43 @@ class SurrogateFilter:
             len(rejected_uncertain),
             self.top_k,
         )
-        return kept
+        return kept, {
+            "enabled": True,
+            "applied": True,
+            "reason": "ensemble_filter_applied",
+            "use_ensemble": True,
+            "input_count": len(sequences),
+            "valid_feature_count": len(valid_indices),
+            "kept_count": len(kept),
+            "rejected_count": len(sequences) - len(kept),
+            "rejected_uncertain_count": len(rejected_uncertain),
+            "top_k": self.top_k,
+            "min_score": self.min_score,
+            "max_uncertainty": self.max_uncertainty,
+            "predicted_score_max": float(np.max(robustness_scores)),
+            "predicted_score_mean": float(np.mean(robustness_scores)),
+            "predicted_uncertainty_max": float(np.max(robustness_uncertainty)),
+            "predicted_uncertainty_mean": float(np.mean(robustness_uncertainty)),
+            "kept_sequence_ids": [sequence.id for sequence in kept],
+        }
 
-    def filter(
+    def filter_with_report(
         self,
         sequences: list[SequenceCandidate],
         register_lookup: dict[str, RegisterCandidate],
-    ) -> list[SequenceCandidate]:
+    ) -> tuple[list[SequenceCandidate], dict[str, Any]]:
         if not self.enabled:
-            return sequences
+            return sequences, self._passthrough_report(sequences, "disabled")
         if not sequences:
-            return []
+            return [], self._passthrough_report(sequences, "empty_input")
         if self._ensemble is not None:
             return self._filter_with_ensemble(sequences, register_lookup)
         if self._model is None:
-            return sequences
+            return sequences, self._passthrough_report(sequences, "model_unavailable")
 
         features, valid_indices = self._extract_batch_features(sequences, register_lookup)
         if features is None:
-            return sequences
+            return sequences, self._passthrough_report(sequences, "no_valid_register_features")
 
         predictions = self._model.predict_numpy(features)
         robustness_scores = predictions[:, 0]
@@ -249,4 +289,27 @@ class SurrogateFilter:
             self.top_k,
             self.min_score,
         )
+        return filtered, {
+            "enabled": True,
+            "applied": True,
+            "reason": "single_model_filter_applied",
+            "use_ensemble": False,
+            "input_count": len(sequences),
+            "valid_feature_count": len(valid_indices),
+            "kept_count": len(filtered),
+            "rejected_count": len(sequences) - len(filtered),
+            "top_k": self.top_k,
+            "min_score": self.min_score,
+            "max_uncertainty": self.max_uncertainty,
+            "predicted_score_max": float(np.max(robustness_scores)),
+            "predicted_score_mean": float(np.mean(robustness_scores)),
+            "kept_sequence_ids": [sequence.id for sequence in filtered],
+        }
+
+    def filter(
+        self,
+        sequences: list[SequenceCandidate],
+        register_lookup: dict[str, RegisterCandidate],
+    ) -> list[SequenceCandidate]:
+        filtered, _ = self.filter_with_report(sequences, register_lookup)
         return filtered
