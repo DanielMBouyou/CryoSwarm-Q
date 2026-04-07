@@ -66,13 +66,23 @@ def _get_secret(key: str, default: str = "") -> str:
         return value
     try:
         import streamlit as st  # noqa: F811
-        return str(st.secrets.get(key, default))
+        return str(st.secrets[key])
     except Exception:
         return default
 
 
-@lru_cache(maxsize=1)
+_settings_cache: Settings | None = None
+
+
 def get_settings() -> Settings:
+    global _settings_cache
+    if _settings_cache is not None and _settings_cache.mongodb_uri:
+        return _settings_cache
+    _settings_cache = _build_settings()
+    return _settings_cache
+
+
+def _build_settings() -> Settings:
     return Settings(
         app_env=AppEnvironment(_get_secret("APP_ENV", "development")),
         log_level=_get_secret("LOG_LEVEL", "INFO"),
