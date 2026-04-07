@@ -59,12 +59,24 @@ class Settings(BaseModel):
         return has_token_auth or has_user_password_auth
 
 
+def _get_secret(key: str, default: str = "") -> str:
+    """Read from os.environ first, then Streamlit secrets, then default."""
+    value = os.getenv(key, "")
+    if value:
+        return value
+    try:
+        import streamlit as st  # noqa: F811
+        return str(st.secrets.get(key, default))
+    except Exception:
+        return default
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings(
-        app_env=AppEnvironment(os.getenv("APP_ENV", "development")),
-        log_level=os.getenv("LOG_LEVEL", "INFO"),
-        mongodb_uri=os.getenv("MONGODB_URI", ""),
+        app_env=AppEnvironment(_get_secret("APP_ENV", "development")),
+        log_level=_get_secret("LOG_LEVEL", "INFO"),
+        mongodb_uri=_get_secret("MONGODB_URI", ""),
         mongodb_db=os.getenv("MONGODB_DB")
         or os.getenv("MONGODB_DATABASE", "cryoswarm_q"),
         mongodb_connect_timeout_ms=int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "5000")),
