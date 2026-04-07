@@ -8,6 +8,8 @@ can be tested without a live MongoDB connection or Streamlit runtime.
 
 from typing import Any
 
+import numpy as np
+
 from packages.core.models import (
     AgentDecision,
     CampaignState,
@@ -119,3 +121,61 @@ def build_register_lookup_from_documents(
         )
         for document in documents
     }
+
+
+def generate_waveform(
+    family: str,
+    omega_max: float,
+    delta_start: float,
+    delta_end: float,
+    duration_ns: float,
+    n_points: int = 200,
+) -> tuple[list[float], list[float], list[float]]:
+    """Return (time_ns, omega_values, delta_values) for a given pulse family."""
+
+    t = np.linspace(0, duration_ns, n_points)
+    T = duration_ns
+
+    if family == "constant_drive":
+        omega = np.full_like(t, omega_max)
+        delta = np.full_like(t, delta_start)
+    elif family == "global_ramp":
+        omega = omega_max * t / T
+        delta = delta_start + (delta_end - delta_start) * t / T
+    elif family == "detuning_scan":
+        omega = np.full_like(t, omega_max)
+        delta = delta_start + (delta_end - delta_start) * t / T
+    elif family == "adiabatic_sweep":
+        omega = omega_max * np.sin(np.pi * t / T) ** 2
+        delta = delta_start + (delta_end - delta_start) * t / T
+    elif family == "blackman_sweep":
+        omega = omega_max * (
+            0.42 - 0.50 * np.cos(2 * np.pi * t / T) + 0.08 * np.cos(4 * np.pi * t / T)
+        )
+        delta = delta_start + (delta_end - delta_start) * t / T
+    else:
+        omega = np.full_like(t, omega_max)
+        delta = np.full_like(t, delta_start)
+
+    return t.tolist(), omega.tolist(), delta.tolist()
+
+
+def compute_pareto_front(candidates: list[dict[str, Any]]) -> list[int]:
+    """Return indices of Pareto-optimal candidates (maximise objective_score and worst_case_score)."""
+
+    pareto_indices: list[int] = []
+    for i, c in enumerate(candidates):
+        c_obj = c.get("objective_score", 0)
+        c_worst = c.get("worst_case_score", 0)
+        dominated = False
+        for j, other in enumerate(candidates):
+            if i == j:
+                continue
+            o_obj = other.get("objective_score", 0)
+            o_worst = other.get("worst_case_score", 0)
+            if o_obj >= c_obj and o_worst >= c_worst and (o_obj > c_obj or o_worst > c_worst):
+                dominated = True
+                break
+        if not dominated:
+            pareto_indices.append(i)
+    return pareto_indices

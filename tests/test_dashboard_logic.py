@@ -177,6 +177,80 @@ def test_noise_sensitivity_data_missing_scenarios() -> None:
     assert values == [0.72]
 
 
+def test_generate_waveform_constant() -> None:
+    from apps.dashboard.logic import generate_waveform
+
+    t, omega, delta = generate_waveform("constant_drive", 5.0, -10.0, 10.0, 1000.0)
+    assert len(t) == 200
+    assert all(abs(o - 5.0) < 1e-10 for o in omega)
+    assert all(abs(d - (-10.0)) < 1e-10 for d in delta)
+
+
+def test_generate_waveform_blackman() -> None:
+    from apps.dashboard.logic import generate_waveform
+
+    t, omega, delta = generate_waveform("blackman_sweep", 5.0, -10.0, 10.0, 1000.0)
+    assert len(t) == 200
+    assert omega[0] < 0.01  # Blackman starts near zero
+    assert max(omega) <= 5.0 + 1e-10
+
+
+def test_generate_waveform_adiabatic() -> None:
+    from apps.dashboard.logic import generate_waveform
+
+    t, omega, delta = generate_waveform("adiabatic_sweep", 5.0, -10.0, 10.0, 1000.0)
+    assert len(t) == 200
+    assert abs(omega[0]) < 1e-10  # sin^2(0) = 0
+    assert abs(omega[-1]) < 1e-10  # sin^2(pi) = 0
+
+
+def test_generate_waveform_global_ramp() -> None:
+    from apps.dashboard.logic import generate_waveform
+
+    t, omega, delta = generate_waveform("global_ramp", 5.0, -10.0, 10.0, 1000.0)
+    assert len(t) == 200
+    assert abs(omega[0]) < 1e-10  # starts at 0
+    assert abs(omega[-1] - 5.0) < 1e-10  # ends at omega_max
+
+
+def test_generate_waveform_detuning_scan() -> None:
+    from apps.dashboard.logic import generate_waveform
+
+    t, omega, delta = generate_waveform("detuning_scan", 5.0, -10.0, 10.0, 1000.0)
+    assert len(t) == 200
+    assert all(abs(o - 5.0) < 1e-10 for o in omega)
+    assert abs(delta[0] - (-10.0)) < 1e-10
+    assert abs(delta[-1] - 10.0) < 1e-10
+
+
+def test_compute_pareto_front() -> None:
+    from apps.dashboard.logic import compute_pareto_front
+
+    candidates = [
+        {"objective_score": 0.8, "worst_case_score": 0.3},
+        {"objective_score": 0.5, "worst_case_score": 0.7},
+        {"objective_score": 0.6, "worst_case_score": 0.5},
+    ]
+    pareto = compute_pareto_front(candidates)
+    assert 0 in pareto  # (0.8, 0.3) is Pareto optimal
+    assert 1 in pareto  # (0.5, 0.7) is Pareto optimal
+
+
+def test_compute_pareto_front_single() -> None:
+    from apps.dashboard.logic import compute_pareto_front
+
+    candidates = [{"objective_score": 0.8, "worst_case_score": 0.5}]
+    pareto = compute_pareto_front(candidates)
+    assert pareto == [0]
+
+
+def test_compute_pareto_front_empty() -> None:
+    from apps.dashboard.logic import compute_pareto_front
+
+    pareto = compute_pareto_front([])
+    assert pareto == []
+
+
 def test_build_register_lookup_from_documents() -> None:
     created_at = datetime.now(UTC)
     document = {
