@@ -61,6 +61,99 @@ _DEFAULT_PARAM_SPACE = PhysicsParameterSpace.default()
 logger = get_logger(__name__)
 
 
+def _max_detuning_domain(space: PhysicsParameterSpace) -> tuple[float, float]:
+    detuning_mins = [float(pulse_space.detuning_start.min_val) for pulse_space in space.pulse.values()]
+    detuning_maxs = [float(pulse_space.detuning_start.max_val) for pulse_space in space.pulse.values()]
+    for pulse_space in space.pulse.values():
+        if pulse_space.detuning_end is None:
+            continue
+        detuning_mins.append(float(pulse_space.detuning_end.min_val))
+        detuning_maxs.append(float(pulse_space.detuning_end.max_val))
+    return min(detuning_mins), max(detuning_maxs)
+
+
+def _max_blockade_radius_um(space: PhysicsParameterSpace) -> float:
+    min_amplitude = min(float(pulse_space.amplitude.min_val) for pulse_space in space.pulse.values())
+    if min_amplitude <= 0.0:
+        return float(space.default_blockade_radius_um)
+    return float((space.c6_coefficient / min_amplitude) ** (1.0 / 6.0))
+
+
+def _max_sweep_span(space: PhysicsParameterSpace) -> float:
+    max_span = 0.0
+    for pulse_space in space.pulse.values():
+        if pulse_space.detuning_end is None:
+            continue
+        for detuning_start in (pulse_space.detuning_start.min_val, pulse_space.detuning_start.max_val):
+            for detuning_end in (pulse_space.detuning_end.min_val, pulse_space.detuning_end.max_val):
+                max_span = max(max_span, abs(float(detuning_end) - float(detuning_start)))
+    return max_span
+
+
+def _build_feature_normalization_constants(space: PhysicsParameterSpace) -> dict[str, float]:
+    amplitude_scale = max(float(pulse_space.amplitude.max_val) for pulse_space in space.pulse.values())
+    detuning_min, detuning_max = _max_detuning_domain(space)
+    detuning_offset = abs(detuning_min)
+    duration_ns_scale = max(float(pulse_space.duration_ns.max_val) for pulse_space in space.pulse.values())
+    blockade_radius_scale = _max_blockade_radius_um(space)
+    min_distance_scale = float(space.geometry.spacing_um.max_val)
+    max_spacing = float(space.geometry.spacing_um.max_val)
+    min_spacing = max(float(space.geometry.spacing_um.min_val), 1e-6)
+    adiabaticity_scale = max(
+        float(pulse_space.duration_ns.max_val) / 1000.0 * float(pulse_space.amplitude.max_val)
+        for pulse_space in space.pulse.values()
+    )
+    interaction_floor = max(space.c6_coefficient / max(max_spacing**6, 1e-6), 1e-10)
+    min_amplitude = max(
+        min(float(pulse_space.amplitude.min_val) for pulse_space in space.pulse.values()),
+        1e-10,
+    )
+    return {
+        "amplitude_scale": amplitude_scale,
+        "detuning_offset": detuning_offset,
+        "detuning_range": float(detuning_max - detuning_min),
+        "duration_ns_scale": duration_ns_scale,
+        "layout_scale": float(max(len(LAYOUT_ENCODING) - 1, 1)),
+        "family_scale": float(max(len(SequenceFamily) - 1, 1)),
+        "omega_over_interaction_scale": amplitude_scale / interaction_floor,
+        "detuning_over_omega_scale": max(abs(detuning_min), abs(detuning_max)) / min_amplitude,
+        "adiabaticity_scale": adiabaticity_scale,
+        "atom_count_scale": float(space.geometry.atom_count.max_val),
+        "predicted_cost_log_scale": float(np.log1p(1.0)),
+        "blockade_over_spacing_scale": blockade_radius_scale / min_spacing,
+        "blockade_radius_scale": blockade_radius_scale,
+        "min_distance_scale": min_distance_scale,
+        "sweep_span_scale": _max_sweep_span(space),
+    }
+
+
+FEATURE_NORMALIZATION_DEFAULTS = _build_feature_normalization_constants(_DEFAULT_PARAM_SPACE)
+AMPLITUDE_SCALE = FEATURE_NORMALIZATION_DEFAULTS["amplitude_scale"]
+DETUNING_OFFSET = FEATURE_NORMALIZATION_DEFAULTS["detuning_offset"]
+DETUNING_RANGE = FEATURE_NORMALIZATION_DEFAULTS["detuning_range"]
+DURATION_NS_SCALE = FEATURE_NORMALIZATION_DEFAULTS["duration_ns_scale"]
+LAYOUT_SCALE = FEATURE_NORMALIZATION_DEFAULTS["layout_scale"]
+FAMILY_SCALE = FEATURE_NORMALIZATION_DEFAULTS["family_scale"]
+OMEGA_OVER_INTERACTION_SCALE = FEATURE_NORMALIZATION_DEFAULTS["omega_over_interaction_scale"]
+DETUNING_OVER_OMEGA_SCALE = FEATURE_NORMALIZATION_DEFAULTS["detuning_over_omega_scale"]
+ADIABATICITY_SCALE = FEATURE_NORMALIZATION_DEFAULTS["adiabaticity_scale"]
+ATOM_COUNT_SCALE = FEATURE_NORMALIZATION_DEFAULTS["atom_count_scale"]
+PREDICTED_COST_LOG_SCALE = FEATURE_NORMALIZATION_DEFAULTS["predicted_cost_log_scale"]
+BLOCKADE_OVER_SPACING_SCALE = FEATURE_NORMALIZATION_DEFAULTS["blockade_over_spacing_scale"]
+BLOCKADE_RADIUS_SCALE = FEATURE_NORMALIZATION_DEFAULTS["blockade_radius_scale"]
+MIN_DISTANCE_SCALE = FEATURE_NORMALIZATION_DEFAULTS["min_distance_scale"]
+SWEEP_SPAN_SCALE = FEATURE_NORMALIZATION_DEFAULTS["sweep_span_scale"]
+
+
+def feature_normalization_constants(
+    param_space: PhysicsParameterSpace | None = None,
+) -> dict[str, float]:
+    space = param_space or _DEFAULT_PARAM_SPACE
+    if space is _DEFAULT_PARAM_SPACE:
+        return FEATURE_NORMALIZATION_DEFAULTS
+    return _build_feature_normalization_constants(space)
+
+
 def _encode_layout(name: str) -> int:
     return LAYOUT_ENCODING.get(name, len(LAYOUT_ENCODING))
 
@@ -99,39 +192,58 @@ def build_feature_vector_v2(
 ) -> NDArray[np.float32]:
     """Enhanced feature vector with physics-informed features."""
     space = param_space or PhysicsParameterSpace.default()
+    normalizers = feature_normalization_constants(space)
     spacing = float(register.metadata.get("spacing_um", space.geometry.spacing_um.default))
     blockade_pairs_total = max(register.atom_count * (register.atom_count - 1) / 2, 1)
     blockade_fraction = float(register.blockade_pair_count / blockade_pairs_total)
 
     interaction_energy = space.c6_coefficient / (spacing**6) if spacing > 0 else 0.0
     omega_over_interaction = sequence.amplitude / max(interaction_energy, 1e-10) if interaction_energy else 0.0
-    omega_over_interaction_norm = min(omega_over_interaction, 10.0) / 10.0
+    omega_over_interaction_norm = min(omega_over_interaction, normalizers["omega_over_interaction_scale"]) / max(
+        normalizers["omega_over_interaction_scale"],
+        1e-10,
+    )
 
     detuning_over_omega = abs(sequence.detuning) / max(sequence.amplitude, 0.01)
-    detuning_over_omega_norm = min(detuning_over_omega, 20.0) / 20.0
+    detuning_over_omega_norm = min(detuning_over_omega, normalizers["detuning_over_omega_scale"]) / max(
+        normalizers["detuning_over_omega_scale"],
+        1e-10,
+    )
 
     duration_us = sequence.duration_ns / 1000.0
     adiabaticity = duration_us * sequence.amplitude
-    adiabaticity_norm = min(adiabaticity, 100.0) / 100.0
+    adiabaticity_norm = min(adiabaticity, normalizers["adiabaticity_scale"]) / max(
+        normalizers["adiabaticity_scale"],
+        1e-10,
+    )
 
-    hilbert_dim_log = register.atom_count / 25.0
+    hilbert_dim_log = register.atom_count / max(normalizers["atom_count_scale"], 1.0)
     feasibility = float(register.feasibility_score)
-    cost_log = min(np.log1p(sequence.predicted_cost), np.log(2.0)) / np.log(2.0)
+    cost_log = min(np.log1p(sequence.predicted_cost), normalizers["predicted_cost_log_scale"]) / max(
+        normalizers["predicted_cost_log_scale"],
+        1e-10,
+    )
     blockade_over_spacing = register.blockade_radius_um / max(spacing, 0.1)
-    blockade_over_spacing_norm = min(blockade_over_spacing, 3.0) / 3.0
+    blockade_over_spacing_norm = min(blockade_over_spacing, normalizers["blockade_over_spacing_scale"]) / max(
+        normalizers["blockade_over_spacing_scale"],
+        1e-10,
+    )
 
     detuning_end = float(sequence.metadata.get("detuning_end", sequence.detuning))
-    sweep_span_norm = min(abs(detuning_end - sequence.detuning), 50.0) / 50.0
+    sweep_span_norm = min(abs(detuning_end - sequence.detuning), normalizers["sweep_span_scale"]) / max(
+        normalizers["sweep_span_scale"],
+        1e-10,
+    )
 
     return np.array(
         [
-            register.atom_count / float(space.geometry.atom_count.max_val),
-            spacing / float(space.geometry.spacing_um.max_val),
-            sequence.amplitude / 15.8,
-            (sequence.detuning + 126.0) / 252.0,
-            sequence.duration_ns / 6000.0,
-            _encode_layout(register.layout_type) / 5.0,
-            _encode_family(sequence.sequence_family.value) / 4.0,
+            register.atom_count / max(normalizers["atom_count_scale"], 1.0),
+            spacing / max(float(space.geometry.spacing_um.max_val), 1.0),
+            sequence.amplitude / max(normalizers["amplitude_scale"], 1.0),
+            (sequence.detuning + normalizers["detuning_offset"]) / max(normalizers["detuning_range"], 1.0),
+            sequence.duration_ns / max(normalizers["duration_ns_scale"], 1.0),
+            _encode_layout(register.layout_type) / max(normalizers["layout_scale"], 1.0),
+            _encode_family(sequence.sequence_family.value) / max(normalizers["family_scale"], 1.0),
             blockade_fraction,
             omega_over_interaction_norm,
             detuning_over_omega_norm,
@@ -140,8 +252,8 @@ def build_feature_vector_v2(
             feasibility,
             cost_log,
             blockade_over_spacing_norm,
-            register.blockade_radius_um / 15.0,
-            register.min_distance_um / 15.0,
+            register.blockade_radius_um / max(normalizers["blockade_radius_scale"], 1.0),
+            register.min_distance_um / max(normalizers["min_distance_scale"], 1.0),
             sweep_span_norm,
         ],
         dtype=np.float32,

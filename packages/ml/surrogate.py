@@ -20,6 +20,19 @@ except ImportError:
     nn = None  # type: ignore[assignment]
 
 
+DEFAULT_SURROGATE_HIDDEN = 128
+DEFAULT_SURROGATE_N_BLOCKS = 3
+DEFAULT_SURROGATE_DROPOUT = 0.1
+DEFAULT_SURROGATE_ENSEMBLE_MODELS = 3
+
+DEFAULT_SURROGATE_LR = 1e-3
+DEFAULT_SURROGATE_WEIGHT_DECAY = 1e-5
+DEFAULT_SURROGATE_TARGET_WEIGHTS = (2.0, 1.0, 1.5, 1.0)
+DEFAULT_SURROGATE_TARGET_WEIGHT_SUM = float(sum(DEFAULT_SURROGATE_TARGET_WEIGHTS))
+DEFAULT_SURROGATE_SCHEDULER_PATIENCE = 10
+DEFAULT_SURROGATE_SCHEDULER_FACTOR = 0.5
+
+
 def _check_torch() -> None:
     if not TORCH_AVAILABLE:
         raise RuntimeError("PyTorch is required: pip install 'cryoswarm-q[ml]'")
@@ -232,9 +245,9 @@ class SurrogateModelV2(_NormalizerMixin, nn.Module if TORCH_AVAILABLE else objec
         self,
         input_dim: int = INPUT_DIM_V2,
         output_dim: int = OUTPUT_DIM,
-        hidden: int = 128,
-        n_blocks: int = 3,
-        dropout: float = 0.1,
+        hidden: int = DEFAULT_SURROGATE_HIDDEN,
+        n_blocks: int = DEFAULT_SURROGATE_N_BLOCKS,
+        dropout: float = DEFAULT_SURROGATE_DROPOUT,
     ) -> None:
         _check_torch()
         super().__init__()
@@ -312,7 +325,7 @@ class SurrogateEnsemble:
 
     def __init__(
         self,
-        n_models: int = 3,
+        n_models: int = DEFAULT_SURROGATE_ENSEMBLE_MODELS,
         model_class: type = SurrogateModelV2,
         **model_kwargs: Any,
     ) -> None:
@@ -376,8 +389,8 @@ class SurrogateTrainer:
     def __init__(
         self,
         model: Any,
-        lr: float = 1e-3,
-        weight_decay: float = 1e-5,
+        lr: float = DEFAULT_SURROGATE_LR,
+        weight_decay: float = DEFAULT_SURROGATE_WEIGHT_DECAY,
         target_weights: list[float] | None = None,
     ) -> None:
         _check_torch()
@@ -390,10 +403,10 @@ class SurrogateTrainer:
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode="min",
-            factor=0.5,
-            patience=10,
+            factor=DEFAULT_SURROGATE_SCHEDULER_FACTOR,
+            patience=DEFAULT_SURROGATE_SCHEDULER_PATIENCE,
         )
-        weights = target_weights or [2.0, 1.0, 1.5, 1.0]
+        weights = list(target_weights or DEFAULT_SURROGATE_TARGET_WEIGHTS)
         self.target_weights = torch.tensor(weights, dtype=torch.float32)
 
     def _weighted_mse(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

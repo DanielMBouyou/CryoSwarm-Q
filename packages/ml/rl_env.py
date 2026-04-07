@@ -17,6 +17,11 @@ FAMILY_LIST = list(SequenceFamily)
 OBS_DIM_V1 = 14
 OBS_DIM = 16
 ACT_DIM = 4
+DEFAULT_RL_ENV_MAX_STEPS = 5
+DEFAULT_RL_ENV_IMPROVEMENT_WEIGHT = 0.5
+DEFAULT_RL_ENV_IMPROVEMENT_SCALE = 1.5
+DEFAULT_RL_ENV_TERMINAL_BONUS_FACTOR = 0.5
+DEFAULT_RL_ENV_SEED = 42
 logger = get_logger(__name__)
 
 
@@ -31,6 +36,19 @@ def _action_normalizers(param_space: PhysicsParameterSpace | None = None) -> dic
         "amplitude": max(float(ranges["amplitude"][1]), 1.0),
         "detuning": max(abs(float(ranges["detuning"][0])), abs(float(ranges["detuning"][1])), 1.0),
         "duration_ns": max(float(ranges["duration_ns"][1]), 1.0),
+    }
+
+
+def _observation_normalizers(param_space: PhysicsParameterSpace | None = None) -> dict[str, float]:
+    space = _active_param_space(param_space)
+    from packages.ml.dataset import feature_normalization_constants
+
+    feature_normalizers = feature_normalization_constants(space)
+    return {
+        "atom_count": max(feature_normalizers["atom_count_scale"], 1.0),
+        "spacing": max(float(space.geometry.spacing_um.max_val), 1.0),
+        "blockade_radius": max(feature_normalizers["blockade_radius_scale"], 1.0),
+        "layout": max(feature_normalizers["layout_scale"], 1.0),
     }
 
 
@@ -93,11 +111,11 @@ class PulseDesignEnv:
         spec: ExperimentSpec,
         register_candidates: list[RegisterCandidate],
         param_space: PhysicsParameterSpace | None = None,
-        max_steps: int = 5,
+        max_steps: int = DEFAULT_RL_ENV_MAX_STEPS,
         simulate_fn: Any | None = None,
         reward_shaping: bool = True,
-        improvement_weight: float = 0.5,
-        improvement_scale: float = 5.0,
+        improvement_weight: float = DEFAULT_RL_ENV_IMPROVEMENT_WEIGHT,
+        improvement_scale: float = DEFAULT_RL_ENV_IMPROVEMENT_SCALE,
     ) -> None:
         self.spec = spec
         self.param_space = param_space or PhysicsParameterSpace.default()
@@ -109,7 +127,7 @@ class PulseDesignEnv:
         self._improvement_weight = improvement_weight
         self._improvement_scale = improvement_scale
 
-        self._rng = np.random.default_rng(42)
+        self._rng = np.random.default_rng(DEFAULT_RL_ENV_SEED)
         self._step_count = 0
         self._current_register: RegisterCandidate | None = None
         self._best_robustness = 0.0
@@ -134,21 +152,22 @@ class PulseDesignEnv:
         from packages.ml.dataset import _encode_layout
 
         spacing = float(register.metadata.get("spacing_um", self.param_space.geometry.spacing_um.default))
-        normalizers = _action_normalizers(self.param_space)
+        action_normalizers = _action_normalizers(self.param_space)
+        observation_normalizers = _observation_normalizers(self.param_space)
         return np.array(
             [
-                float(register.atom_count),
-                spacing,
-                float(register.blockade_radius_um),
+                float(register.atom_count) / observation_normalizers["atom_count"],
+                spacing / observation_normalizers["spacing"],
+                float(register.blockade_radius_um) / observation_normalizers["blockade_radius"],
                 float(register.feasibility_score),
                 float(self.spec.target_density),
-                float(self.spec.min_atoms),
-                float(self.spec.max_atoms),
-                float(_encode_layout(register.layout_type)),
+                float(self.spec.min_atoms) / observation_normalizers["atom_count"],
+                float(self.spec.max_atoms) / observation_normalizers["atom_count"],
+                float(_encode_layout(register.layout_type)) / observation_normalizers["layout"],
                 float(self._best_robustness),
-                float(self._best_params.get("amplitude", 0.0)) / normalizers["amplitude"],
-                float(self._best_params.get("detuning", 0.0)) / normalizers["detuning"],
-                float(self._best_params.get("duration_ns", 0.0)) / normalizers["duration_ns"],
+                float(self._best_params.get("amplitude", 0.0)) / action_normalizers["amplitude"],
+                float(self._best_params.get("detuning", 0.0)) / action_normalizers["detuning"],
+                float(self._best_params.get("duration_ns", 0.0)) / action_normalizers["duration_ns"],
                 float(self._step_count) / max(self.max_steps, 1),
                 float(max(0, self.max_steps - self._step_count)) / max(self.max_steps, 1),
                 float(self._best_nominal),
@@ -193,6 +212,8 @@ class PulseDesignEnv:
 
         raw_reward = 0.0
         reward = 0.0
+        improvement_bonus = 0.0
+        terminal_bonus = 0.0
         info: dict[str, Any] = {
             "params": params,
             "step": self._step_count,
@@ -204,16 +225,18 @@ class PulseDesignEnv:
 
             improvement = max(0.0, raw_reward - self._best_robustness)
             if self._reward_shaping:
+                improvement_bonus = improvement * self._improvement_scale
                 base_weight = 1.0 - self._improvement_weight
                 reward = (
                     base_weight * raw_reward
-                    + self._improvement_weight * improvement * self._improvement_scale
+                    + self._improvement_weight * improvement_bonus
                 )
             else:
                 reward = raw_reward
 
             info["shaped_reward"] = reward
             info["improvement"] = improvement
+            info["improvement_bonus"] = improvement_bonus
 
             if raw_reward > self._best_robustness:
                 self._best_robustness = raw_reward
@@ -234,13 +257,16 @@ class PulseDesignEnv:
             info["raw_robustness"] = raw_reward
             info["shaped_reward"] = reward
             info["improvement"] = 0.0
+            info["improvement_bonus"] = 0.0
 
         terminated = self._step_count >= self.max_steps
         if terminated and self._reward_shaping:
-            reward += self._best_robustness * 0.5
+            terminal_bonus = self._best_robustness * DEFAULT_RL_ENV_TERMINAL_BONUS_FACTOR
+            reward += terminal_bonus
 
         info["robustness_score"] = raw_reward
         info["episode_best"] = self._best_robustness
+        info["terminal_bonus"] = terminal_bonus
         info["episode_history"] = list(self._episode_history) if terminated else []
 
         return self._build_observation(), float(reward), terminated, False, info
