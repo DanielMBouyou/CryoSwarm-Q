@@ -181,7 +181,7 @@ with tab3:
             labels = list(strategy_counts.keys())
             values = list(strategy_counts.values())
             fig_pie = go.Figure(go.Pie(labels=labels, values=values, hole=0.3))
-            fig_pie.update_layout(template="plotly_white", title="Strategy Distribution", height=350)
+            fig_pie.update_layout(template="cryoswarm", title="Strategy Distribution", height=350)
             st.plotly_chart(fig_pie, use_container_width=True)
 
             # Per-strategy table
@@ -230,12 +230,12 @@ with tab4:
 
             fig = go.Figure(
                 data=[
-                    go.Bar(name="RL", x=labels, y=rl_counts, marker_color="#d62728"),
-                    go.Bar(name="Heuristic", x=labels, y=heur_counts, marker_color="#1f77b4"),
+                    go.Bar(name="RL", x=labels, y=rl_counts, marker_color="#ff6b6b"),
+                    go.Bar(name="Heuristic", x=labels, y=heur_counts, marker_color="#00b4d8"),
                 ]
             )
             fig.update_layout(
-                template="plotly_white",
+                template="cryoswarm",
                 title="RL vs Heuristic Candidates per Trial",
                 barmode="group",
                 yaxis_title="Candidate Count",

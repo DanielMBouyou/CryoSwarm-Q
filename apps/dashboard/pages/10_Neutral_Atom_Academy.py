@@ -15,6 +15,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+# Register the cryoswarm Plotly template (side-effect import).
+import apps.dashboard.components.plotly_charts as _charts  # noqa: F401
+
 ROOT_DIR = Path(__file__).resolve().parents[3]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -49,14 +52,14 @@ from packages.simulation.observables import (
 # Style constants
 # ---------------------------------------------------------------------------
 
-_BLUE = "#1f77b4"
-_RED = "#d62728"
-_GREEN = "#2ca02c"
-_GOLD = "#ff7f0e"
-_PURPLE = "#9467bd"
+_BLUE = "#00b4d8"
+_RED = "#ff6b6b"
+_GREEN = "#00d4aa"
+_GOLD = "#ffd166"
+_PURPLE = "#a78bfa"
 _CYAN = "#17becf"
 _PINK = "#e377c2"
-_TEMPLATE = "plotly_white"
+_TEMPLATE = "cryoswarm"
 
 st.set_page_config(page_title="Neutral Atom Academy", layout="wide", page_icon="🔬")
 

@@ -10,15 +10,35 @@ from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 
-_BLUE = "#1f77b4"
-_RED = "#d62728"
-_GREEN = "#2ca02c"
-_GOLD = "#ffd700"
-_ORANGE = "#ff7f0e"
-_PURPLE = "#9467bd"
-_TEMPLATE = "plotly_white"
+# --- CryoSwarm-Q dark palette ------------------------------------------------
+
+_BLUE = "#00b4d8"
+_RED = "#ff6b6b"
+_GREEN = "#00d4aa"
+_GOLD = "#ffd166"
+_ORANGE = "#ff9f43"
+_PURPLE = "#a78bfa"
+
+# Build a custom Plotly template that blends with the dark Streamlit theme.
+_cryo_template = pio.templates["plotly_dark"]
+_cryo_template.layout.paper_bgcolor = "rgba(0,0,0,0)"
+_cryo_template.layout.plot_bgcolor = "rgba(0,0,0,0)"
+_cryo_template.layout.font = dict(family="Inter, sans-serif", color="#c9d1d9", size=13)
+_cryo_template.layout.title = dict(font=dict(color="#e6edf3", size=16))
+_cryo_template.layout.xaxis.gridcolor = "#21262d"
+_cryo_template.layout.xaxis.zerolinecolor = "#30363d"
+_cryo_template.layout.yaxis.gridcolor = "#21262d"
+_cryo_template.layout.yaxis.zerolinecolor = "#30363d"
+_cryo_template.layout.colorway = [
+    _BLUE, _GREEN, _ORANGE, _RED, _PURPLE, _GOLD, "#17becf", "#e377c2",
+]
+pio.templates["cryoswarm"] = _cryo_template
+pio.templates.default = "cryoswarm"
+
+_TEMPLATE = "cryoswarm"
 
 
 # -- Page 1: Campaign Control ------------------------------------------------
@@ -942,13 +962,25 @@ def ppo_training_dashboard(history: dict[str, list[float]]) -> go.Figure:
                 col=col,
             )
 
-    _add("episode_reward", 1, 1, _BLUE)
+    reward_series = history.get("episode_reward", history.get("episode_rewards", []))
+    if reward_series:
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(len(reward_series))),
+                y=reward_series,
+                mode="lines",
+                line=dict(color=_BLUE),
+                showlegend=False,
+            ),
+            row=1,
+            col=1,
+        )
     _add("policy_loss", 1, 2, _RED)
     _add("value_loss", 2, 1, _GREEN)
     _add("entropy", 2, 2, _ORANGE)
 
     # Rolling average for reward
-    rewards = history.get("episode_reward", [])
+    rewards = reward_series
     if len(rewards) > 50:
         window = 50
         rolling = [float(np.mean(rewards[max(0, i - window):i + 1])) for i in range(len(rewards))]
