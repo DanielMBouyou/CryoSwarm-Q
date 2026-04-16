@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ssl
 import threading
 
+import certifi
 from pymongo import MongoClient
 from pymongo.database import Database
 
@@ -33,6 +35,7 @@ def get_mongo_client(settings: Settings | None = None) -> MongoClient:
             if _CLIENT is None:
                 _CLIENT = MongoClient(
                     settings.mongodb_uri,
+                    tlsCAFile=certifi.where(),
                     connectTimeoutMS=settings.mongodb_connect_timeout_ms,
                     serverSelectionTimeoutMS=settings.mongodb_server_selection_timeout_ms,
                     socketTimeoutMS=settings.mongodb_socket_timeout_ms,
